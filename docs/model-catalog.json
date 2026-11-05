@@ -8,6 +8,14 @@
       "memory_gb": 32,
       "pack": "mac-best",
       "note": "The 32GB MacBook Pro M4 is the 10-core chip. The Mac pack is built for this machine. Both speech models stay resident. Default preset is accurate."
+    },
+    {
+      "id": "iphone-17-pro-max-1tb",
+      "chip": "A19 Pro",
+      "memory_gb": 12,
+      "storage_gb": 1024,
+      "pack": "iphone-17-pro-max",
+      "note": "1TB is storage. RAM is 12GB, bandwidth about 77 GB/s. The live set stays near 7GB of weights. Default preset is accurate. Both speech models stay resident."
     }
   ],
   "latency_presets": {
@@ -31,7 +39,7 @@
       "language_prompt": "th-TH",
       "license": "OpenMDW-1.1",
       "export_status": "needs-export",
-      "note": "Best streaming Thai model. Full precision on the 32GB M4, default chunk 1040 ms. Keeps English words mixed into Thai. iPhone only after the device spike passes. Paper: arXiv:2609.14991."
+      "note": "Best streaming Thai model. Full precision on the 32GB M4. Int8 on the iPhone 17 Pro Max. Default chunk 1040 ms on both. Keeps English words mixed into Thai. Paper: arXiv:2609.14991."
     },
     {
       "id": "typhoon-asr-streaming-nemotron-0.6b-ngram",
@@ -41,14 +49,14 @@
       "hf_repo": "typhoon-ai/typhoon-asr-streaming-nemotron-0.6b-ngram",
       "revision": null,
       "runtime": "shallow-fusion",
-      "platforms": ["macos"],
+      "platforms": ["macos", "ios"],
       "quality_tier": "best",
       "chunk_ms": [],
       "default_chunk_ms": null,
       "language_prompt": "th-TH",
       "license": "OpenMDW-1.1",
       "export_status": "needs-export",
-      "note": "Paired 4-gram for the 0.6B Thai model. On for the Mac pack. Raises keyword recall at the 1040 ms point. Spike disables it if the chunk budget breaks."
+      "note": "Paired 4-gram for the 0.6B Thai model. On for both packs. Raises keyword recall at the 1040 ms point. First thing dropped on the phone if a chunk misses."
     },
     {
       "id": "typhoon-asr-streaming-115m",
@@ -82,7 +90,25 @@
       "language_prompt": "en-US",
       "license": "OpenMDW-1.1",
       "export_status": "needs-export",
-      "note": "English is transcription-ready. Full precision on the 32GB M4, default chunk 1120 ms, kept resident next to the Thai model. Thai on this checkpoint is adaptation-ready and is not used. Int8 is the phone file. Community conversions are spike inputs, not the pinned release."
+      "note": "English is transcription-ready. Full precision on the 32GB M4, int8 on the iPhone 17 Pro Max. Default chunk 1120 ms. Kept resident on both target machines. Thai on this checkpoint is adaptation-ready and is not used. Community conversions are spike inputs, not the pinned release."
+    },
+    {
+      "id": "chindamt-4b-4bit",
+      "task": "mt",
+      "languages": ["th", "en"],
+      "title": "ChindaMT 4B, 4-bit",
+      "hf_repo": "veha/ChindaMT-4B-MLX-4bit",
+      "revision": null,
+      "runtime": "mlx",
+      "platforms": ["ios"],
+      "quality_tier": "device",
+      "chunk_ms": [],
+      "default_chunk_ms": null,
+      "language_prompt": null,
+      "license": "Apache-2.0",
+      "export_status": "community-mlx",
+      "size_gb": 2.7,
+      "note": "iPhone 17 Pro Max translation model. Same ChindaMT-4B weights as the Mac, 4-bit so it fits beside int8 speech and the 3B notes model. Conversion notes: 2.7 GB, 94.6% semantic fidelity, 37/100 prompts identical to bf16. Re-time on the A19 Pro."
     },
     {
       "id": "chindamt-4b-8bit",
@@ -135,7 +161,7 @@
       "language_prompt": null,
       "license": "Apache-2.0",
       "export_status": "needs-quantized-build",
-      "note": "iPhone translation model, both directions."
+      "note": "Phone fallback if ChindaMT-4B 4-bit misses the lag budget or the 12GB memory limit."
     },
     {
       "id": "hy-mt2-1.8b",
@@ -170,7 +196,25 @@
       "license": "Apache-2.0",
       "export_status": "community-mlx",
       "size_gb": 4.3,
-      "note": "Mac live notes only. Reads committed turns in the translation language and maintains a meeting note: title, summary, decisions, actions, open questions. Scheduled behind ChindaMT. About 4.3 GB. Source weights are Typhoon 2 Qwen2.5 7B Instruct."
+      "note": "Mac live notes. Reads committed turns in the translation language and maintains a meeting note: title, summary, decisions, actions, open questions. Scheduled behind ChindaMT. About 4.3 GB. Too large to keep resident on the 12GB phone beside the rest of the pack. Source weights are Typhoon 2 Qwen2.5 7B Instruct."
+    },
+    {
+      "id": "typhoon2-3b-instruct-4bit",
+      "task": "notes",
+      "languages": ["th", "en"],
+      "title": "Typhoon 2 3B Instruct, 4-bit",
+      "hf_repo": "scb10x/llama3.2-typhoon2-3b-instruct-mlx-4bit",
+      "revision": null,
+      "runtime": "mlx",
+      "platforms": ["ios"],
+      "quality_tier": "device",
+      "chunk_ms": [],
+      "default_chunk_ms": null,
+      "language_prompt": null,
+      "license": "Apache-2.0",
+      "export_status": "community-mlx",
+      "size_gb": null,
+      "note": "iPhone 17 Pro Max live notes. Same prompt and JSON as the 7B Mac model. A 3B 4-bit file is on the order of 2 GB. The spike records the real size and the lag."
     },
     {
       "id": "fluidaudio-ls-eend",
@@ -210,31 +254,22 @@
       "note": "Both speech models stay loaded. Live notes run on committed turns behind translation. ChindaMT-4B bf16 is the translation upgrade if the M4 spike clears the lag budget."
     },
     {
-      "id": "iphone-default",
-      "title": "iPhone, default",
+      "id": "iphone-17-pro-max",
+      "title": "iPhone 17 Pro Max, 1TB",
       "platforms": ["ios"],
+      "hardware": "iphone-17-pro-max-1tb",
       "directions": ["th-en", "en-th"],
+      "default_preset": "accurate",
       "recommended": true,
       "models": [
-        "typhoon-asr-streaming-115m",
-        "nemotron-3.5-asr-streaming-0.6b-en",
-        "chindamt-0.8b",
-        "fluidaudio-ls-eend"
-      ]
-    },
-    {
-      "id": "iphone-quality",
-      "title": "iPhone, quality",
-      "platforms": ["ios"],
-      "directions": ["th-en", "en-th"],
-      "recommended": false,
-      "models": [
         "typhoon-asr-streaming-nemotron-0.6b",
+        "typhoon-asr-streaming-nemotron-0.6b-ngram",
         "nemotron-3.5-asr-streaming-0.6b-en",
-        "chindamt-0.8b",
+        "chindamt-4b-4bit",
+        "typhoon2-3b-instruct-4bit",
         "fluidaudio-ls-eend"
       ],
-      "note": "Offered only on iPhones where the 0.6B Thai model finishes a chunk before the next one arrives."
+      "note": "Int8 speech, 4-bit ChindaMT-4B, Typhoon 2 3B notes. Both speech models stay resident. The n-gram is dropped first if a chunk misses. The 115M Thai model is the thermal fallback and is not in this pack."
     }
   ]
 }

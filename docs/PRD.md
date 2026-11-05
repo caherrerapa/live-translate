@@ -10,7 +10,10 @@ Build one product in one repository. Two Apple targets share one Swift engine: a
 
 The engine is local. The microphone audio never leaves the device. There is no account, no cloud speech API, and no fallback that uploads audio when a model is missing. If the model for the chosen direction is not installed, Listen stays off.
 
-Models are a catalog, not a single baked-in checkpoint. The app downloads the files the user picks from Hugging Face, checks the hash, and loads only a pack marked for that platform. Mac and iPhone do not default to the same weights. The Mac we are building for is a MacBook Pro with an M4 and 32GB of unified memory. That pack is the best streaming Thai model, at its most accurate chunk, with English kept loaded beside it. iPhone defaults to the smaller streaming Thai model that can keep up.
+Models are a catalog, not a single baked-in checkpoint. The app downloads the files the user picks from Hugging Face, checks the hash, and loads only a pack marked for that platform. The two machines we are building for:
+
+- MacBook Pro, M4, 32GB. Best streaming Thai model at full precision, English kept loaded, ChindaMT-4B at 8-bit, Typhoon 2 7B for notes.
+- iPhone 17 Pro Max, 1TB. Same Thai and English speech models, quantized, at the same accurate chunk, with ChindaMT-4B at 4-bit and a smaller notes model. The 1TB is storage. The phone has 12GB of RAM, so the Mac's resident set does not fit.
 
 v1 languages are Thai and English, both directions. v1 output is text. Spoken playback is later.
 
@@ -47,7 +50,7 @@ v1 uses one meeting template: summary, decisions, actions, open questions. Plaud
 4. Choose Fast, Balanced, or Accurate. That sets the streaming chunk. It does not download a different file.
 5. Tap Listen. Partial text appears in the source panel while the person is talking. The translation panel follows the stable part of that text.
 6. See a speaker chip on each turn. Rename the chip for this session ("Speaker 2" → a name). The rename sticks until the app quits or the user clears the session.
-7. On the Mac, watch a notes column update during the session: title, summary, decisions, actions, open questions. Each item can be opened back to the turn it came from.
+7. Watch the note update during the session: title, summary, decisions, actions, open questions. Each item can be opened back to the turn it came from. On the Mac this is a column. On the iPhone it is a live page in the same session.
 8. Press Highlight to pin the current turn into the note without waiting for the next notes pass.
 9. Stop. The notes take one last pass over any turns not yet folded in. Scroll back through the session. Copy a turn or save the transcript and the note as text. Saving stores text on device. It does not store the audio. There is no Generate step after Stop.
 10. Change type size. On the Mac, drag the window; the two language panels stay equal width. Hide the notes column when the window is tight.
@@ -85,7 +88,7 @@ The notes column, top to bottom: title, summary, Decisions, Actions, Open questi
 
 ### 5.2 iPhone
 
-Same session, stacked. Source on top, translation below a divider, both bound to the same turn list so they do not drift. Direction sits in the navigation bar. Listen is the bottom button. Latency and the model pack live in a sheet, not in the reading surface. Type is large by default. Side-by-side on a phone is not the layout. The live notes column is Mac-only in v1. An iPhone session saves the transcript. It does not run the notes model.
+The phone we are building for is an iPhone 17 Pro Max. Portrait stacks the languages: source on top, translation below, same turn list. Landscape uses the two columns, because the 6.9-inch screen is wide enough for that and not wide enough for a third column. Notes are a segmented page, Conversation and Notes, and the note keeps updating while the user is on Conversation. Listen stays the bottom button. Direction sits in the navigation bar. Highlight is next to Listen. Type is large by default.
 
 ### 5.3 iPad
 
@@ -116,9 +119,9 @@ v1 hears the room through the microphone. Capturing system audio (a Meet call pl
 
 ### 6.2 Direction
 
-v1 loads the speech model for the source language, the translation model, and the speaker model. The user swaps direction. On the 32GB M4 both speech models stay resident, so the swap does not reload weights. On iPhone only one speech model stays resident.
+v1 loads the speech model for the source language, the translation model, the notes model, and the speaker model. The user swaps direction. On both target machines the other speech model stays resident, so the swap does not reload weights.
 
-Automatic language switching inside one session is not in v1. Thai speech with English words mixed in is still Thai mode. The Mac model is chosen because it keeps those English words. The small iPhone model is weaker on that mix, and the model row says so.
+Automatic language switching inside one session is not in v1. Thai speech with English words mixed in is still Thai mode. Both machines use the 0.6B Thai model, which keeps those English words. The phone runs it quantized.
 
 ### 6.3 Partials and commits
 
@@ -165,7 +168,7 @@ Real-time diarization will sometimes flip and then settle. Soniox documents the 
 
 ### 6.6 Live notes
 
-Mac only. The notes model reads committed turns in the translation language. It does not read the live tail, and it does not read audio. ChindaMT stays the translator. The notes model is Typhoon 2 Qwen2.5 7B Instruct, 4-bit MLX, about 4.3 GB, Apache-2.0, Thai and English.
+The notes model reads committed turns in the translation language. It does not read the live tail, and it does not read audio. ChindaMT stays the translator. On the Mac the notes model is Typhoon 2 Qwen2.5 7B Instruct, 4-bit, about 4.3 GB. On the iPhone 17 Pro Max it is Typhoon 2 3B Instruct, 4-bit, on the order of 2 GB. The 7B file does not fit beside speech, translation, and speakers in 12GB. Same prompt, same JSON, same column-or-page. Apache-2.0, Thai and English.
 
 A pass runs when any of these is true, and no pass is already running, and the translator is idle:
 
@@ -226,15 +229,15 @@ Published streaming operating points (arXiv:2609.14991):
 
 At 3200 ms the same model reaches 13.0% CER on TVSpeech. The paper's shallow-fusion n-gram raises keyword recall on a held-out TVSpeech slice from 16.6% to 20.7% at the 1040 ms point, at no CER cost. The n-gram is `typhoon-ai/typhoon-asr-streaming-nemotron-0.6b-ngram`. On this Mac it is part of the pack. The spike turns it off only if decoding no longer finishes inside the chunk.
 
-The Mac pack defaults to the 1040 ms chunk. That is the Accurate preset, and it is the best published operating point of this model. Fast is 80 ms. Balanced is 480 ms. Extra GPU does not shrink the look-ahead: the model waits for that much audio before the first piece. What the M4 changes is that the 0.6B network finishes the chunk with time to spare, so we do not have to pick a shorter chunk to keep up. Weights stay full precision. Int8 is the phone path.
+Both target machines default to the 1040 ms chunk. That is the Accurate preset, and it is the best published operating point of this model. Fast is 80 ms. Balanced is 480 ms. Extra GPU does not shrink the look-ahead: the model waits for that much audio before the first piece. A 0.6B streaming chunk is a small compute job next to that wait. A community Core ML build of the sibling Nemotron 3.5 0.6B model finishes a 320 ms chunk in about 53 ms on an iPhone 17 Pro, roughly six times faster than real time. We still measure the Thai checkpoint on this Pro Max. The Mac runs the speech weights at full precision. The phone runs them int8, because 12GB and about 77 GB/s of memory bandwidth are the limits, not the storage.
 
-### 7.2 Thai speech, iPhone default
+### 7.2 Thai speech, phone fallback
 
 `typhoon-ai/typhoon-asr-streaming-115m`
 
-Same streaming family, 115M parameters, Thai tokenizer only, CC-BY-4.0. Streaming CER on TVSpeech is 19.4% at 1040 ms and 16.4% at 3200 ms. The model card says to use this one when English mixed into the Thai is light, and to use the 0.6B model when that mix matters.
+Same streaming family, 115M parameters, Thai tokenizer only, CC-BY-4.0. Streaming CER on TVSpeech is 19.4% at 1040 ms. The model card says to use this one when English mixed into the Thai is light.
 
-This is the iPhone default because it is the one most likely to run faster than real time next to a translation model and a speaker model. A later "Quality" pack may install the 0.6B model on an iPhone that passed the spike.
+This is not the Pro Max default. It is the pack the phone falls back to only if the int8 0.6B model cannot finish a chunk before the next one arrives, including after the phone has warmed up. The row says the English-in-Thai weakness when that happens.
 
 ### 7.3 Why the other Thai checkpoints are not the live model
 
@@ -256,13 +259,14 @@ Community conversions already exist (ONNX int4, Core ML int8 around 612 MB, MLX)
 
 ### 7.5 Translation
 
-Default: the ChindaMT family from iApp, Apache-2.0, Thai and English only, both directions. The Mac pack uses the 4B model. A smaller translation model is the phone pack.
+Default: the ChindaMT family from iApp, Apache-2.0, Thai and English only, both directions. Both machines use the 4B model. The phone uses the 4-bit file so the weights fit beside speech and notes.
 
 | Pack | Model | Where |
 | --- | --- | --- |
 | Mac, this machine | ChindaMT-4B, 8-bit MLX (`veha/ChindaMT-4B-MLX-8bit`) | MacBook Pro M4, 32GB |
 | Mac, quality ceiling | ChindaMT-4B, bf16 MLX (`veha/ChindaMT-4B-MLX-bf16`) | Same Mac, if the spike's lag holds |
-| Phone | `iapp/ChindaMT-0.8B` quantized | iPhone |
+| iPhone 17 Pro Max | ChindaMT-4B, 4-bit MLX (`veha/ChindaMT-4B-MLX-4bit`), 2.7 GB | Phone |
+| Phone fallback | `iapp/ChindaMT-0.8B` quantized | Only if 4-bit misses the lag or the memory limit |
 
 8-bit is the file we download. It is 4.5 GB. The conversion notes, measured on an M3 Max, report 72 tokens/s and 99.3% semantic fidelity against the original weights, with 81 of 100 prompts identical to bf16. 4-bit is 2.7 GB and only 37 of 100 prompts identical, so it is not the pack. bf16 is 8.4 GB, 39 tokens/s on that same M3 Max, and identical to the original on those 100 prompts. 8.4 GB fits in 32GB next to both speech models. The published speed does not transfer to this Mac: those numbers are from an M3 Max, and a 32GB MacBook Pro M4 is the 10-core chip, with about 120 GB/s of memory bandwidth. Translation decode is limited by that bandwidth. The spike on this machine times 8-bit and bf16 on a growing turn. bf16 replaces 8-bit if a short turn still lands inside the section 8 lag. If 8-bit is over the lag, the translator waits for a longer stable prefix before each call. We do not drop to a 2B model to save memory. Memory is not the constraint.
 
@@ -279,14 +283,17 @@ FluidAudio, Apache-2.0, Swift, Core ML, Neural Engine, macOS and iOS. The online
 | Pack | Platform | Thai speech | English speech | Translation | Notes | Speakers |
 | --- | --- | --- | --- | --- | --- | --- |
 | Mac, best | MacBook Pro M4, 32GB | Typhoon streaming 0.6B, full precision, 1040 ms, with the n-gram | Nemotron 3.5 streaming 0.6B, full precision, 1120 ms, kept resident | ChindaMT-4B 8-bit | Typhoon 2 7B Instruct, 4-bit | FluidAudio LS-EEND |
-| iPhone, default | iOS | Typhoon streaming 115M | Nemotron 3.5 streaming, int8 | ChindaMT-0.8B | none | FluidAudio LS-EEND |
-| iPhone, quality | iOS, only after the spike passes | Typhoon streaming 0.6B | same English model | ChindaMT-0.8B | none | FluidAudio LS-EEND |
+| iPhone 17 Pro Max | A19 Pro, 12GB RAM, 1TB storage | Typhoon streaming 0.6B, int8, 1040 ms, n-gram if the chunk still finishes | Nemotron 3.5 streaming 0.6B, int8, 1120 ms, kept resident | ChindaMT-4B 4-bit | Typhoon 2 3B Instruct, 4-bit | FluidAudio LS-EEND |
 
-Rough resident set on the Mac, weights only: about 1–2 GB for each speech model, 4.5 GB for 8-bit ChindaMT, about 4.3 GB for the notes model, under 1 GB for diarization, plus the n-gram. That is on the order of 13–15 GB before activations. The rest of the 32GB stays with the system. bf16 translation moves the translation file from 4.5 GB to 8.4 GB and still fits beside the notes model. The notes model does not replace ChindaMT.
+Rough resident set on the Mac, weights only: about 1–2 GB for each speech model, 4.5 GB for 8-bit ChindaMT, about 4.3 GB for the 7B notes model, under 1 GB for diarization, plus the n-gram. That is on the order of 13–15 GB before activations.
+
+On the phone the same full set is about 9–10 GB of weights, and iOS still needs several gigabytes, so it does not load. The Pro Max pack stays near 7 GB of weights: about 1 GB per int8 speech model, 2.7 GB for 4-bit ChindaMT, about 2 GB for the 3B notes model, and under 1 GB for diarization. The 1TB drive stores every file, including the 7B notes model and the 8-bit translator, without making them runnable together. bf16 translation stays a Mac file.
+
+If a 10-minute session is killed for memory, the phone unloads the idle speech model first and reloads it on a direction swap. The 0.6B Thai model stays. If 4-bit ChindaMT misses the translation lag, the phone uses ChindaMT-0.8B. The 115M Thai model is only the thermal fallback.
 
 ## 8. Latency budget
 
-Accurate is the default on the 32GB M4. Balanced stays the default on iPhone. Times are the product targets, measured on device, from speech to pixels. Paper numbers above are the model's look-ahead, not yet our end-to-end measurement.
+Accurate is the default on both target machines. Times are the product targets, measured on device, from speech to pixels. Paper numbers above are the model's look-ahead, not yet our end-to-end measurement.
 
 | Stage | Fast | Balanced | Accurate |
 | --- | --- | --- | --- |
@@ -319,11 +326,11 @@ The recognizer and the translator need a runtime that exists on both platforms. 
 The runtime plan, in order:
 
 1. Streaming speech: ONNX Runtime, called through sherpa-onnx's Swift API if the exported transducer loads there, otherwise a small Swift wrapper over the same ONNX Runtime. One streaming loop for the Typhoon models and for Nemotron English. Cache tensors are inputs and outputs, so a chunk does not re-encode the whole minute.
-2. Translation: MLX on the Mac for ChindaMT-4B 8-bit, and the same Swift runtime on iPhone for ChindaMT-0.8B if it hits the section 8 lag. llama.cpp is the alternate if MLX Swift cannot host the 0.8B model on iPhone. One wrapper, two backends only if one runtime cannot host both. The Mac notes model is a second MLX model in that same wrapper, scheduled behind translation.
+2. Translation and notes: MLX, one wrapper. Mac loads ChindaMT-4B 8-bit and Typhoon 2 7B. iPhone 17 Pro Max loads ChindaMT-4B 4-bit and Typhoon 2 3B. llama.cpp is the alternate if MLX Swift cannot host those files on iOS. Notes are a second model in that wrapper, scheduled behind translation.
 3. Speakers: FluidAudio, linked from both apps.
 4. Download: URLSession, our catalog, our hashes.
 
-The first milestone is not the window. It is a command-line spike that streams a Thai recording through the exported 115M model and the exported 0.6B model on a Mac, prints partials with timestamps, and records real-time factor and time-to-first-piece. The iPhone spike is the same binary path on a device. The UI milestone starts after those two numbers exist.
+The first milestone is not the window. It is a command-line spike that streams a Thai recording through the exported 0.6B model on a Mac, prints partials with timestamps, and records real-time factor and time-to-first-piece. The iPhone spike is the int8 build of that same model on the 17 Pro Max, unplugged, for ten minutes. The 115M export is the fallback spike, not the first one. The UI milestone starts after the 0.6B numbers exist on both machines.
 
 Export notes the spike has to settle:
 
@@ -331,7 +338,7 @@ Export notes the spike has to settle:
 - The 115M model is the converted Typhoon ASR Real-time streaming checkpoint, with a different context schedule (`att_context_size` pairs in the model card). It may need its own export.
 - A full-context ONNX file that only accepts a whole utterance fails the spike, even if the character error rate looks good.
 
-Intel Macs are out. The floor is Apple silicon. The oldest iPhone we name in the App Store text is the oldest phone that finishes the 10-minute test in section 11. Until that test exists, the claim is "iPhone that passes the spike."
+Intel Macs are out. The floor is Apple silicon. The iPhone we build and test on is the 17 Pro Max. Older phones are out of v1 even if a later build happens to launch.
 
 ## 10. Privacy
 
@@ -373,7 +380,7 @@ UI checks before calling the Mac app done:
 - Highlight pins the current turn before the notes pass runs.
 - Stop runs one last notes pass and leaves a finished note. No upload, no Generate button.
 
-UI checks for iPhone: the same session on a phone, stacked, plus rotation on an iPad between columns and stack without clearing the transcript.
+UI checks for the iPhone 17 Pro Max: portrait stays stacked, landscape becomes two columns, the Notes page updates while Conversation is showing, Highlight works, and a ten-minute session is still alive at the end. Rotation does not clear the transcript. iPad regular width still uses the Mac columns.
 
 ## 12. Build order
 
@@ -383,12 +390,12 @@ Each step is shippable on its own. Later steps do not start by rewriting the eng
 2. Mac spike: export and stream Typhoon 115M and Typhoon 0.6B. Record the section 11 numbers.
 3. Mac spike: Nemotron English through the same loop.
 4. Translation spike, on this 32GB M4: ChindaMT-4B 8-bit and bf16, both directions, on a growing turn. Keep 8-bit unless bf16 lands inside the section 8 lag.
-5. iPhone spike: 115M speech plus 0.8B translation plus FluidAudio, 10 minutes, unplugged.
+5. iPhone 17 Pro Max spike, unplugged, ten minutes: int8 0.6B Thai, int8 English kept resident, ChindaMT-4B 4-bit, Typhoon 2 3B notes, FluidAudio. Record memory, temperature, and whether translation still hits section 8.
 6. Mac app: the two panels, Listen, direction, latency, model screen.
 7. iPhone app: the stacked panels on the same engine. iPad columns.
 8. Speaker chips and rename.
 9. Save transcript. Copy a turn.
-10. Mac notes column: Typhoon 2 7B on committed turns, behind the translator. Highlight, jump-to-turn, one last pass on Stop.
+10. Notes UI on both machines: Mac column with Typhoon 2 7B, iPhone page with Typhoon 2 3B. Same JSON. Highlight, jump-to-turn, one last pass on Stop.
 
 Step 6 waits on steps 2 and 4. Step 7 waits on step 5. Step 10 waits on step 6. If step 2 cannot export the 0.6B model, the Mac pack temporarily uses the 115M model and the model row says the best Thai model is not on device yet. We do not fill the gap with Whisper or with a cloud call. If the notes model makes translation miss section 8, the notes pass waits longer. The translator does not get smaller to make room.
 
@@ -405,7 +412,7 @@ Step 6 waits on steps 2 and 4. Step 7 waits on step 5. Step 10 waits on step 6. 
 - Fine-tuning.
 - A custom glossary. ChindaMT can take terminology rules. v1 always sends the same plain prompt.
 - Plaud's template catalog, mind map, and ask-this-recording chat. v1 has one meeting note.
-- Live notes on iPhone. The phone session is the two languages.
+- The 7B notes model and the 8-bit translator running on the phone. The files may sit on the 1TB drive. They are not part of the live set.
 
 ## 14. Risks
 
@@ -413,13 +420,14 @@ Step 6 waits on steps 2 and 4. Step 7 waits on step 5. Step 10 waits on step 6. 
 | --- | --- |
 | The Typhoon streaming checkpoints do not export to a cache-aware ONNX file | The spike stops the UI. We adapt the export NVIDIA's Nemotron streaming model already has, since the 0.6B Thai model is that architecture with a longer tokenizer. We do not swap in an offline model and call it live. |
 | ChindaMT-4B bf16 is too slow on the 10-core M4 | The pack stays on the 8-bit file. Speech stays on the 0.6B model. A longer stable prefix is the lag relief, not a smaller model. |
-| The 115M iPhone model mangles English words inside Thai | The row says so. The quality pack is the 0.6B model on phones that pass the spike. |
+| The int8 0.6B Thai model misses chunks once the Pro Max is warm | The session drops to the 115M model and the row says English mixed into Thai will suffer. |
 | Real-time speaker labels flicker | The chip is allowed to change until the turn commits. Committed turns stay. |
 | A community Core ML file is convenient and wrong | Hashes are pinned to files we verified. Convenience builds do not ship. |
 | Hy-MT2's license is awkward | It stays out of the default packs. |
 | CC-BY-4.0 on the 115M model requires attribution | The model screen lists the license and the authors. |
 | The notes model invents an action or a deadline | Every card cites a turn. The prompt may only use what the turns say. The user can delete a card. A card locks only after a second pass repeats it. |
 | The notes model steals the GPU from translation | The notes pass runs only when the translator is idle. A busy translator postpones the note. |
+| The Pro Max pack is killed for memory | Weights stay near 7 GB. The first cut is unloading the speech model that is not in use. The 0.6B Thai model stays. |
 
 ## 15. Repo shape
 
@@ -438,6 +446,6 @@ Downloaded weights are not committed.
 These do not block the spikes. They need an answer before a public TestFlight build.
 
 - Distribution: Developer ID for the Mac, TestFlight for the iPhone. No cloud account to register.
-- The oldest iPhone we are willing to buy hardware for. The budget in section 8 decides the rest.
+- Nothing about the iPhone model. v1 is the 17 Pro Max, 12GB RAM, 1TB storage. |
 - Whether a saved transcript should survive a reinstall. v1 can keep it in the app container and lose it on uninstall.
 - The product name on the home screen. The repo stays `live-translate` either way.
