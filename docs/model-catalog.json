@@ -1,6 +1,15 @@
 {
   "version": 1,
   "notes": "The app downloads only entries in this file. Size and sha256 are filled when the spike pins a build. A model with export_status other than ready is listed so the choice is visible, and the app keeps it disabled.",
+  "hardware_profiles": [
+    {
+      "id": "macbook-pro-m4-32gb",
+      "chip": "M4",
+      "memory_gb": 32,
+      "pack": "mac-best",
+      "note": "The 32GB MacBook Pro M4 is the 10-core chip. The Mac pack is built for this machine. Both speech models stay resident. Default preset is accurate."
+    }
+  ],
   "latency_presets": {
     "fast": "smallest trained chunk",
     "balanced": "default_chunk_ms",
@@ -22,7 +31,24 @@
       "language_prompt": "th-TH",
       "license": "OpenMDW-1.1",
       "export_status": "needs-export",
-      "note": "Best streaming Thai model. Keeps English words mixed into Thai. Mac default. iPhone only after the device spike passes. Paper: arXiv:2609.14991."
+      "note": "Best streaming Thai model. Full precision on the 32GB M4, default chunk 1040 ms. Keeps English words mixed into Thai. iPhone only after the device spike passes. Paper: arXiv:2609.14991."
+    },
+    {
+      "id": "typhoon-asr-streaming-nemotron-0.6b-ngram",
+      "task": "asr-ngram",
+      "languages": ["th"],
+      "title": "Typhoon ASR Streaming 0.6B n-gram",
+      "hf_repo": "typhoon-ai/typhoon-asr-streaming-nemotron-0.6b-ngram",
+      "revision": null,
+      "runtime": "shallow-fusion",
+      "platforms": ["macos"],
+      "quality_tier": "best",
+      "chunk_ms": [],
+      "default_chunk_ms": null,
+      "language_prompt": "th-TH",
+      "license": "OpenMDW-1.1",
+      "export_status": "needs-export",
+      "note": "Paired 4-gram for the 0.6B Thai model. On for the Mac pack. Raises keyword recall at the 1040 ms point. Spike disables it if the chunk budget breaks."
     },
     {
       "id": "typhoon-asr-streaming-115m",
@@ -52,45 +78,47 @@
       "platforms": ["macos", "ios"],
       "quality_tier": "best",
       "chunk_ms": [80, 160, 320, 560, 1120],
-      "default_chunk_ms": 320,
+      "default_chunk_ms": 1120,
       "language_prompt": "en-US",
       "license": "OpenMDW-1.1",
       "export_status": "needs-export",
-      "note": "English is transcription-ready. Thai on this checkpoint is adaptation-ready and is not used. Community ONNX and Core ML files are spike inputs, not the pinned release."
+      "note": "English is transcription-ready. Full precision on the 32GB M4, default chunk 1120 ms, kept resident next to the Thai model. Thai on this checkpoint is adaptation-ready and is not used. Int8 is the phone file. Community conversions are spike inputs, not the pinned release."
     },
     {
-      "id": "chindamt-4b-4bit",
+      "id": "chindamt-4b-8bit",
       "task": "mt",
       "languages": ["th", "en"],
-      "title": "ChindaMT 4B, 4-bit",
-      "hf_repo": "iapp/ChindaMT-4B",
+      "title": "ChindaMT 4B, 8-bit",
+      "hf_repo": "veha/ChindaMT-4B-MLX-8bit",
       "revision": null,
-      "runtime": "causal-lm",
+      "runtime": "mlx",
       "platforms": ["macos"],
       "quality_tier": "best",
       "chunk_ms": [],
       "default_chunk_ms": null,
       "language_prompt": null,
       "license": "Apache-2.0",
-      "export_status": "needs-quantized-build",
-      "note": "Mac translation model, both directions. Called on a stable prefix of the current turn, not on every audio chunk. A community MLX 4-bit conversion may be the build we pin after a quality check."
+      "export_status": "community-mlx",
+      "size_gb": 4.5,
+      "note": "Mac translation model for the 32GB M4. MLX 8-bit conversion of iapp/ChindaMT-4B. Conversion notes: 99.3% semantic fidelity, 81/100 prompts identical to bf16, 72 tok/s on an M3 Max. Re-time on this M4 before treating that speed as ours."
     },
     {
-      "id": "chindamt-2b",
+      "id": "chindamt-4b-bf16",
       "task": "mt",
       "languages": ["th", "en"],
-      "title": "ChindaMT 2B",
-      "hf_repo": "iapp/ChindaMT-2B",
+      "title": "ChindaMT 4B, bf16",
+      "hf_repo": "veha/ChindaMT-4B-MLX-bf16",
       "revision": null,
-      "runtime": "causal-lm",
+      "runtime": "mlx",
       "platforms": ["macos"],
-      "quality_tier": "fallback",
+      "quality_tier": "ceiling",
       "chunk_ms": [],
       "default_chunk_ms": null,
       "language_prompt": null,
       "license": "Apache-2.0",
-      "export_status": "needs-quantized-build",
-      "note": "Used if ChindaMT 4B misses the balanced lag on the Mac."
+      "export_status": "measure-on-m4",
+      "size_gb": 8.4,
+      "note": "Fits in 32GB. Identical to the original weights on the converter's 100-prompt check. 39 tok/s was measured on an M3 Max. Becomes the Mac model only if a short turn stays inside the lag budget on this M4."
     },
     {
       "id": "chindamt-0.8b",
@@ -147,16 +175,20 @@
   "packs": [
     {
       "id": "mac-best",
-      "title": "Mac, best",
+      "title": "MacBook Pro M4 32GB, best",
       "platforms": ["macos"],
+      "hardware": "macbook-pro-m4-32gb",
       "directions": ["th-en", "en-th"],
+      "default_preset": "accurate",
       "recommended": true,
       "models": [
         "typhoon-asr-streaming-nemotron-0.6b",
+        "typhoon-asr-streaming-nemotron-0.6b-ngram",
         "nemotron-3.5-asr-streaming-0.6b-en",
-        "chindamt-4b-4bit",
+        "chindamt-4b-8bit",
         "fluidaudio-ls-eend"
-      ]
+      ],
+      "note": "Both speech models stay loaded. ChindaMT-4B bf16 is the upgrade if the M4 spike clears the lag budget."
     },
     {
       "id": "iphone-default",
