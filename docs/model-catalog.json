@@ -155,6 +155,24 @@
       "note": "Disabled. Multilingual fallback, including Thai, with a 1.25-bit GGUF Tencent describes as 440 MB. Empty platforms until the license is written into this file."
     },
     {
+      "id": "typhoon2-qwen2.5-7b-instruct-4bit",
+      "task": "notes",
+      "languages": ["th", "en"],
+      "title": "Typhoon 2 7B Instruct, 4-bit",
+      "hf_repo": "typhoon-ai/typhoon2-qwen2.5-7b-instruct-mlx-4bit",
+      "revision": null,
+      "runtime": "mlx",
+      "platforms": ["macos"],
+      "quality_tier": "best",
+      "chunk_ms": [],
+      "default_chunk_ms": null,
+      "language_prompt": null,
+      "license": "Apache-2.0",
+      "export_status": "community-mlx",
+      "size_gb": 4.3,
+      "note": "Mac live notes only. Reads committed turns in the translation language and maintains a meeting note: title, summary, decisions, actions, open questions. Scheduled behind ChindaMT. About 4.3 GB. Source weights are Typhoon 2 Qwen2.5 7B Instruct."
+    },
+    {
       "id": "fluidaudio-ls-eend",
       "task": "diarization",
       "languages": [],
@@ -186,9 +204,10 @@
         "typhoon-asr-streaming-nemotron-0.6b-ngram",
         "nemotron-3.5-asr-streaming-0.6b-en",
         "chindamt-4b-8bit",
+        "typhoon2-qwen2.5-7b-instruct-4bit",
         "fluidaudio-ls-eend"
       ],
-      "note": "Both speech models stay loaded. ChindaMT-4B bf16 is the upgrade if the M4 spike clears the lag budget."
+      "note": "Both speech models stay loaded. Live notes run on committed turns behind translation. ChindaMT-4B bf16 is the translation upgrade if the M4 spike clears the lag budget."
     },
     {
       "id": "iphone-default",

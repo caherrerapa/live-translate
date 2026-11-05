@@ -20,6 +20,8 @@ A person in the room with Thai and English speech, who wants to read both langua
 
 The user keeps the audio. They choose the model. They can delete it.
 
+On the Mac they also get the notes Plaud writes after a recording: a title, a short summary, decisions, actions, and open questions. Those notes update while people are still talking. There is no second step where a recording is copied off a device and summarized later.
+
 ## 3. Reference product
 
 The interaction to match is Soniox (spoken as Sonyox). Soniox already does the parts we would otherwise have to invent in the cloud:
@@ -33,6 +35,10 @@ Soniox does that by receiving the audio. That is the part this product refuses. 
 
 "About one second" is the lag target for the balanced setting, not a second product. The balanced Thai model is built to look ahead about half a second to one second. Section 8 is the budget.
 
+Plaud is the other reference, for the notes rather than the live words. Plaud records, the recording is transferred, and then a cloud pass writes a transcript, a summary, decisions, and action items. The user likes that output and dislikes the wait and the copy-back. This app writes that note from committed turns during the session. The audio is never a file that has to go somewhere else to become useful.
+
+v1 uses one meeting template: summary, decisions, actions, open questions. Plaud's template catalog, mind map, and "ask this recording" chat are later. A Highlight button pins the current turn into the note immediately, which covers the moment-marking people do on a recorder.
+
 ## 4. What the user can do in v1
 
 1. Open the app and see which pack is installed, its size, its language, and its latency step.
@@ -41,18 +47,20 @@ Soniox does that by receiving the audio. That is the part this product refuses. 
 4. Choose Fast, Balanced, or Accurate. That sets the streaming chunk. It does not download a different file.
 5. Tap Listen. Partial text appears in the source panel while the person is talking. The translation panel follows the stable part of that text.
 6. See a speaker chip on each turn. Rename the chip for this session ("Speaker 2" → a name). The rename sticks until the app quits or the user clears the session.
-7. Stop. Scroll back through the session. Copy a turn or save the transcript as text. Saving stores text on device. It does not store the audio.
-8. Change type size. On the Mac, drag the window; the two panels stay equal width.
+7. On the Mac, watch a notes column update during the session: title, summary, decisions, actions, open questions. Each item can be opened back to the turn it came from.
+8. Press Highlight to pin the current turn into the note without waiting for the next notes pass.
+9. Stop. The notes take one last pass over any turns not yet folded in. Scroll back through the session. Copy a turn or save the transcript and the note as text. Saving stores text on device. It does not store the audio. There is no Generate step after Stop.
+10. Change type size. On the Mac, drag the window; the two language panels stay equal width. Hide the notes column when the window is tight.
 
 ## 5. Screens
 
 ### 5.1 Mac
 
-One window, minimum 960 × 640.
+One window, minimum 960 × 640 with the notes column hidden, 1280 × 640 with it open. The notes column is open by default.
 
-Top bar, left to right: direction control (`Thai → English` / `English → Thai`), Listen / Stop, speaker toggle, latency (Fast / Balanced / Accurate), model menu, type size.
+Top bar, left to right: direction control (`Thai → English` / `English → Thai`), Listen / Stop, Highlight, speaker toggle, notes toggle, latency (Fast / Balanced / Accurate), model menu, type size.
 
-Body: two columns, equal width, one hairline between them.
+Body: two equal language columns, then a notes column about 320 px wide.
 
 | Source | Translation |
 | --- | --- |
@@ -73,9 +81,11 @@ Empty states, in order:
 - Listening, silence: both panels stay on the last turn. No fake partials.
 - Microphone denied: a button that opens System Settings.
 
+The notes column, top to bottom: title, summary, Decisions, Actions, Open questions, Highlights. The summary streams in place when a notes pass runs. A card shows the speaker name and jumps to that turn in the language panels. Highlighted turns appear at once. The other sections wait for the notes pass in section 6.6. Empty notes say "Notes appear as the conversation commits." Hiding the column does not stop the passes.
+
 ### 5.2 iPhone
 
-Same session, stacked. Source on top, translation below a divider, both bound to the same turn list so they do not drift. Direction sits in the navigation bar. Listen is the bottom button. Latency and the model pack live in a sheet, not in the reading surface. Type is large by default. Side-by-side on a phone is not the layout.
+Same session, stacked. Source on top, translation below a divider, both bound to the same turn list so they do not drift. Direction sits in the navigation bar. Listen is the bottom button. Latency and the model pack live in a sheet, not in the reading surface. Type is large by default. Side-by-side on a phone is not the layout. The live notes column is Mac-only in v1. An iPhone session saves the transcript. It does not run the notes model.
 
 ### 5.3 iPad
 
@@ -86,7 +96,7 @@ Regular width uses the Mac columns. Compact width uses the iPhone stack. Rotatio
 A list of packs the catalog allows on this platform. Each row shows:
 
 - Name and one-line description.
-- Tasks in the pack (Thai speech, English speech, translation, speakers).
+- Tasks in the pack (Thai speech, English speech, translation, speakers, and on Mac, notes).
 - Download size, once known. The size comes from the file headers at download time. The UI does not invent a size.
 - Latency steps that pack supports.
 - License name.
@@ -153,13 +163,35 @@ v1 does not enroll a voice, does not remember a person across sessions, and does
 
 Real-time diarization will sometimes flip and then settle. Soniox documents the same limit. The UI is built for a chip that can change before the turn commits. It is not built to rewrite a committed turn's speaker.
 
-### 6.6 What is stored
+### 6.6 Live notes
+
+Mac only. The notes model reads committed turns in the translation language. It does not read the live tail, and it does not read audio. ChindaMT stays the translator. The notes model is Typhoon 2 Qwen2.5 7B Instruct, 4-bit MLX, about 4.3 GB, Apache-2.0, Thai and English.
+
+A pass runs when any of these is true, and no pass is already running, and the translator is idle:
+
+- About 8 seconds after a turn commits.
+- About 120 new words have committed since the last pass.
+- The user presses Stop. This pass is the last one. Stop does not upload anything and does not ask the user to generate.
+
+The prompt is the current note plus the turns not yet folded in. The model returns JSON:
+
+- `title`, rewritten only when the subject has become clear.
+- `summary`, a short paragraph, streamed into the column.
+- `decisions`, `actions`, `open_questions`. An action may name a speaker only when that speaker was named in the turns.
+- Each item carries the turn id it came from.
+
+An item stays tentative until the next pass repeats it, then it locks. A later pass may revise a locked item only by pointing at a newer turn that contradicts it. The user can delete a card. Highlighted turns are inserted by the Highlight button and are not waiting on the model.
+
+The notes queue yields to translation. If a translation call is in flight, the notes pass waits. Section 8's translation times do not move to make room for a summary.
+
+### 6.7 What is stored
 
 | Data | v1 |
 | --- | --- |
 | Microphone audio | Memory only, discarded with the buffer |
 | Live transcript | Memory for the session |
-| Saved transcript | On device, only after the user saves. Text, speaker label, times, direction. No audio. |
+| Live note | Memory for the session, updated by section 6.6 |
+| Saved session | On device, only after the user saves. Transcript text, speaker labels, times, direction, and on Mac the note. No audio. |
 | Downloaded weights | On device, the app's container, deleted when the user deletes the pack |
 | Account | None |
 
@@ -244,13 +276,13 @@ FluidAudio, Apache-2.0, Swift, Core ML, Neural Engine, macOS and iOS. The online
 
 ### 7.7 Default packs
 
-| Pack | Platform | Thai speech | English speech | Translation | Speakers |
-| --- | --- | --- | --- | --- | --- |
-| Mac, best | MacBook Pro M4, 32GB | Typhoon streaming 0.6B, full precision, 1040 ms, with the n-gram | Nemotron 3.5 streaming 0.6B, full precision, 1120 ms, kept resident | ChindaMT-4B 8-bit | FluidAudio LS-EEND |
-| iPhone, default | iOS | Typhoon streaming 115M | Nemotron 3.5 streaming, int8 | ChindaMT-0.8B | FluidAudio LS-EEND |
-| iPhone, quality | iOS, only after the spike passes | Typhoon streaming 0.6B | same English model | ChindaMT-0.8B | FluidAudio LS-EEND |
+| Pack | Platform | Thai speech | English speech | Translation | Notes | Speakers |
+| --- | --- | --- | --- | --- | --- | --- |
+| Mac, best | MacBook Pro M4, 32GB | Typhoon streaming 0.6B, full precision, 1040 ms, with the n-gram | Nemotron 3.5 streaming 0.6B, full precision, 1120 ms, kept resident | ChindaMT-4B 8-bit | Typhoon 2 7B Instruct, 4-bit | FluidAudio LS-EEND |
+| iPhone, default | iOS | Typhoon streaming 115M | Nemotron 3.5 streaming, int8 | ChindaMT-0.8B | none | FluidAudio LS-EEND |
+| iPhone, quality | iOS, only after the spike passes | Typhoon streaming 0.6B | same English model | ChindaMT-0.8B | none | FluidAudio LS-EEND |
 
-Rough resident set on the Mac, weights only: about 1–2 GB for each speech model, 4.5 GB for 8-bit ChindaMT, under 1 GB for diarization, plus the n-gram. That is on the order of 8–10 GB before activations, which leaves the rest of the 32GB for the system and the session. bf16 translation moves the translation file from 4.5 GB to 8.4 GB and still fits.
+Rough resident set on the Mac, weights only: about 1–2 GB for each speech model, 4.5 GB for 8-bit ChindaMT, about 4.3 GB for the notes model, under 1 GB for diarization, plus the n-gram. That is on the order of 13–15 GB before activations. The rest of the 32GB stays with the system. bf16 translation moves the translation file from 4.5 GB to 8.4 GB and still fits beside the notes model. The notes model does not replace ChindaMT.
 
 ## 8. Latency budget
 
@@ -264,10 +296,11 @@ Accurate is the default on the 32GB M4. Balanced stays the default on iPhone. Ti
 | First source glyphs | under 0.4 s | under 0.8 s | under 1.4 s |
 | Translation of a short stable prefix | under 0.8 s after the prefix commits | under 1.5 s | under 2.0 s |
 | Speaker chip settles | may lag the text | may lag the text | may lag the text |
+| Notes pass | after a committed turn, on the Mac | same | same |
 
 Compute rule: if a model cannot finish a chunk before the next chunk arrives (real-time factor under 1, target under 0.5 on Mac and under 0.7 on the iPhone we claim), that pack is disabled on that device. The catalog does not offer a model that falls behind the speaker.
 
-Diarization is allowed to be later than the text. A missing chip is acceptable. Late text is not.
+Diarization is allowed to be later than the text. A missing chip is acceptable. Late text is not. Notes are allowed to lag the translation by a pass. A missing summary for the first few seconds is acceptable. A stalled translation is not.
 
 ## 9. Runtime
 
@@ -275,9 +308,10 @@ One engine, used by both apps. Swift. The apps are thin: window or screen, permi
 
 ```
 Microphone → 16 kHz frames → chunker
-                              ├─ streaming recognizer → turn builder → panels
+                              ├─ streaming recognizer → turn builder → language panels
                               ├─ diarizer → speaker chips on those turns
-                              └─ (on a stable prefix) translator → translation side
+                              ├─ (on a stable prefix) translator → translation side
+                              └─ (on committed turns, when the translator is idle) notes model → notes column
 ```
 
 The recognizer and the translator need a runtime that exists on both platforms. The weights we want are NeMo and a Qwen-family text model. Neither ships as an iPhone framework.
@@ -285,7 +319,7 @@ The recognizer and the translator need a runtime that exists on both platforms. 
 The runtime plan, in order:
 
 1. Streaming speech: ONNX Runtime, called through sherpa-onnx's Swift API if the exported transducer loads there, otherwise a small Swift wrapper over the same ONNX Runtime. One streaming loop for the Typhoon models and for Nemotron English. Cache tensors are inputs and outputs, so a chunk does not re-encode the whole minute.
-2. Translation: MLX on the Mac for ChindaMT-4B 8-bit, and the same Swift runtime on iPhone for ChindaMT-0.8B if it hits the section 8 lag. llama.cpp is the alternate if MLX Swift cannot host the 0.8B model on iPhone. One wrapper, two backends only if one runtime cannot host both.
+2. Translation: MLX on the Mac for ChindaMT-4B 8-bit, and the same Swift runtime on iPhone for ChindaMT-0.8B if it hits the section 8 lag. llama.cpp is the alternate if MLX Swift cannot host the 0.8B model on iPhone. One wrapper, two backends only if one runtime cannot host both. The Mac notes model is a second MLX model in that same wrapper, scheduled behind translation.
 3. Speakers: FluidAudio, linked from both apps.
 4. Download: URLSession, our catalog, our hashes.
 
@@ -303,7 +337,7 @@ Intel Macs are out. The floor is Apple silicon. The oldest iPhone we name in the
 
 - The microphone is used to translate on this device.
 - Audio is not uploaded, not written to a file, and not put in a crash log.
-- Transcripts are kept only if the user saves them, and then only as text on device.
+- Transcripts and notes are kept only if the user saves them, and then only as text on device.
 - Model downloads are the only network use. The host is Hugging Face. During Listen, the model manager opens no connection.
 - Speaker labels are session-local. No voiceprint is stored.
 - The first-run microphone prompt says this in one sentence. The model screen says weights are downloaded to this device.
@@ -334,7 +368,10 @@ UI checks before calling the Mac app done:
 - Delete the pack, Listen disables.
 - Deny the microphone, the empty state opens Settings.
 - Rename a speaker, later turns of that voice keep the name.
-- Shrink the window to the minimum, both panels remain readable.
+- Shrink the window to the minimum, both panels remain readable, and the notes column can hide.
+- On a two-speaker fixture, a decision spoken in one turn shows up in Decisions after the next notes pass, with a jump back to that turn. An action the speakers did not state does not appear.
+- Highlight pins the current turn before the notes pass runs.
+- Stop runs one last notes pass and leaves a finished note. No upload, no Generate button.
 
 UI checks for iPhone: the same session on a phone, stacked, plus rotation on an iPad between columns and stack without clearing the transcript.
 
@@ -351,8 +388,9 @@ Each step is shippable on its own. Later steps do not start by rewriting the eng
 7. iPhone app: the stacked panels on the same engine. iPad columns.
 8. Speaker chips and rename.
 9. Save transcript. Copy a turn.
+10. Mac notes column: Typhoon 2 7B on committed turns, behind the translator. Highlight, jump-to-turn, one last pass on Stop.
 
-Step 6 waits on steps 2 and 4. Step 7 waits on step 5. If step 2 cannot export the 0.6B model, the Mac pack temporarily uses the 115M model and the model row says the best Thai model is not on device yet. We do not fill the gap with Whisper or with a cloud call.
+Step 6 waits on steps 2 and 4. Step 7 waits on step 5. Step 10 waits on step 6. If step 2 cannot export the 0.6B model, the Mac pack temporarily uses the 115M model and the model row says the best Thai model is not on device yet. We do not fill the gap with Whisper or with a cloud call. If the notes model makes translation miss section 8, the notes pass waits longer. The translator does not get smaller to make room.
 
 ## 13. Out of this version
 
@@ -366,6 +404,8 @@ Step 6 waits on steps 2 and 4. Step 7 waits on step 5. If step 2 cannot export t
 - More languages. The catalog can grow after Thai and English hit the budget. Hy-MT2 is the likely translation model on that day, after the license is written down.
 - Fine-tuning.
 - A custom glossary. ChindaMT can take terminology rules. v1 always sends the same plain prompt.
+- Plaud's template catalog, mind map, and ask-this-recording chat. v1 has one meeting note.
+- Live notes on iPhone. The phone session is the two languages.
 
 ## 14. Risks
 
@@ -378,6 +418,8 @@ Step 6 waits on steps 2 and 4. Step 7 waits on step 5. If step 2 cannot export t
 | A community Core ML file is convenient and wrong | Hashes are pinned to files we verified. Convenience builds do not ship. |
 | Hy-MT2's license is awkward | It stays out of the default packs. |
 | CC-BY-4.0 on the 115M model requires attribution | The model screen lists the license and the authors. |
+| The notes model invents an action or a deadline | Every card cites a turn. The prompt may only use what the turns say. The user can delete a card. A card locks only after a second pass repeats it. |
+| The notes model steals the GPU from translation | The notes pass runs only when the translator is idle. A busy translator postpones the note. |
 
 ## 15. Repo shape
 
