@@ -1,0 +1,42 @@
+Mac spike, 2026-11-06, this machine (Apple M4 Max, 36 GB). Not the PRD's 10-core M4.
+
+Checkpoint: models/typhoon-asr-streaming-nemotron-0.6b.nemo (2.4 GB)
+Runtime: NeMo 3.0.0, cache-aware conformer_stream_step, prompt th-TH, chunk 13 (1040 ms)
+Device: MPS
+
+utt0072.wav, 29.248 s of Thai (TVSpeech clip from warit-s/typhoon-asr-streaming)
+  load_s 15.28
+  first_piece_s 0.128   (compute only; the file is already on disk)
+  elapsed_s 2.457
+  rtf 0.084
+  text is Thai and matches the published unboosted 0.6B transcript,
+  including its known miss on the English word "corporate"
+
+gs00358.wav, 2.980 s
+  cpu rtf 0.973 (one short file, warmup included)
+  mps rtf 0.741 (same, warmup included)
+  text: ที่นางสาวกฎเขาไปหา
+  The published unboosted miss is กชพร -> กฎ. This run made that miss.
+
+Live listening still waits out the 1040 ms chunk, then this compute.
+The Mac real-time-factor gate in the PRD is 0.5. 0.084 clears it on this chip.
+
+ONNX export, same day, same machine. CPU, sherpa-onnx 2.0.1.
+Graph: models/onnx/typhoon-0.6b-1040
+  encoder.onnx + encoder.data (2.45 GB), decoder.onnx, joiner.onnx, tokens.txt
+  cache-aware, prompt_index input, th-TH is index 32, chunk 13 / 1040 ms
+
+utt0072.wav
+  first_piece_s 0.090   (compute only; the file is already on disk)
+  elapsed_s 1.438
+  rtf 0.049
+  text is Thai. The first 83 characters match the NeMo transcript.
+  Character error against that NeMo transcript is 0.129. The gap is in the
+  code-switched English, which both paths garble.
+
+gs00358.wav
+  elapsed_s 0.234
+  rtf 0.079
+  text: นางสาวกชพร
+
+The app still cannot Listen. This proves the shipping runtime, not the window.

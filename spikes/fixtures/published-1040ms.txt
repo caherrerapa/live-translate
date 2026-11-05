@@ -1,0 +1,7 @@
+# Published Typhoon 0.6B output at 1040 ms, copied from
+# warit-s/typhoon-asr-streaming frontend/src/lib/data.ts.
+# These lines are that model's own transcript, not an independent human reference.
+# A matching line means this Mac reproduced their streaming path.
+
+gs00358.wav	ที่นางสาวกชพรเขาไปหา
+utt0072.wav	ชนิดแรกก็คือ SME ที่มีโอกาสเติบโตไปเป็นคอร์เรต ทุกคนเคยเป็น SME มาก่อน แต่บอกได้เลยว่าน้องน้อยมากล้านหนึ่งมีหนึ่ง เอส Ex สองคือ SME ที่มีศักยภาพที่จะเติบโต ไปหรือไปควบคุม copple allente หรือควบคุมกันเองให้เป็น corporate ที่สามคือ SME ที่มีเหตุผลบางอย่าง ที่คุณอยู่เป็น SME ได้ตลอดการ

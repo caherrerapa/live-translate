@@ -39,7 +39,34 @@
       "language_prompt": "th-TH",
       "license": "OpenMDW-1.1",
       "export_status": "needs-export",
-      "note": "Best streaming Thai model. Full precision on the 32GB M4. Int8 on the iPhone 17 Pro Max. Default chunk 1040 ms on both. Keeps English words mixed into Thai. Paper: arXiv:2609.14991."
+      "note": "Best streaming Thai model. Full precision on the 32GB M4. Int8 on the iPhone 17 Pro Max. Default chunk 1040 ms on both. Keeps English words mixed into Thai. Paper: arXiv:2609.14991.",
+      "files": [
+        {
+          "name": "encoder.onnx",
+          "sha256": "8a8a483b7223082165fffa03bd6ae9b9b49cf1766aa777b8ab670bd4efe43046",
+          "bytes": 42247638
+        },
+        {
+          "name": "encoder.data",
+          "sha256": "099e33cd2460d4a26f19f0c8d0e934c284d6ed9b4476323d4f9c1ebcc724470d",
+          "bytes": 2454405120
+        },
+        {
+          "name": "decoder.onnx",
+          "sha256": "0307d9dc95a29d14f69d5008413569c9576bf88458f08b6059e08fb5559444f4",
+          "bytes": 65007824
+        },
+        {
+          "name": "joiner.onnx",
+          "sha256": "80f7c984e6518ea14f9638d6dafba1c291a70b474e2e8961c007ccc9408c4b0c",
+          "bytes": 43075363
+        },
+        {
+          "name": "tokens.txt",
+          "sha256": "70300c69129e0e67469d25fd8c39a486f342439be3a56eb62f656c32a26e21c4",
+          "bytes": 169681
+        }
+      ]
     },
     {
       "id": "typhoon-asr-streaming-nemotron-0.6b-ngram",
@@ -90,7 +117,34 @@
       "language_prompt": "en-US",
       "license": "OpenMDW-1.1",
       "export_status": "needs-export",
-      "note": "English is transcription-ready. Full precision on the 32GB M4, int8 on the iPhone 17 Pro Max. Default chunk 1120 ms. Kept resident on both target machines. Thai on this checkpoint is adaptation-ready and is not used. Community conversions are spike inputs, not the pinned release."
+      "note": "English is transcription-ready. Full precision on the 32GB M4, int8 on the iPhone 17 Pro Max. Default chunk 1120 ms. Kept resident on both target machines. Thai on this checkpoint is adaptation-ready and is not used. Community conversions are spike inputs, not the pinned release.",
+      "files": [
+        {
+          "name": "encoder.onnx",
+          "sha256": "2907fbabae92f6d30c365486391c5df957ccca79b98f78f16e310140f3e621a4",
+          "bytes": 42247615
+        },
+        {
+          "name": "encoder.data",
+          "sha256": "7584f85df76bc9ae6fbdfa53aa8d97b07a842525d1c501d536d77fd9e4f57ac7",
+          "bytes": 2454405120
+        },
+        {
+          "name": "decoder.onnx",
+          "sha256": "0b66e1786b8832196a48d65786aa19650c881218b0f495046ca8579853b200ab",
+          "bytes": 59764944
+        },
+        {
+          "name": "joiner.onnx",
+          "sha256": "a2a49921684d7d06d488df43b1e174df1a5fb1891805d5582ab4cd88e62af938",
+          "bytes": 37824291
+        },
+        {
+          "name": "tokens.txt",
+          "sha256": "729cc103155bafa785f9cd45746cd41cabe97eab7182fc04d594129587958f8a",
+          "bytes": 131440
+        }
+      ]
     },
     {
       "id": "chindamt-4b-4bit",

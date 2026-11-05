@@ -1,0 +1,365 @@
+#if os(macOS)
+import AVFoundation
+import FluidAudio
+import Foundation
+
+/// `canary-transcribe <audio> [--fp16|--int8] [--reference "..."] [--verbose]`
+/// `canary-transcribe <audio> --translate-to de [--source-lang en] [--vad]`
+/// `canary-transcribe --benchmark <librispeech-dir> [--max-files N] [--fp16|--int8]`
+///
+/// Canary-1B-v2 attention encoder-decoder ASR + speech translation (en ↔ 24
+/// European languages via `--translate-to`). Default precision int4 (ANE).
+enum CanaryTranscribeCommand {
+    private static let logger = AppLogger(category: "CanaryTranscribe")
+
+    static func run(arguments: [String]) async {
+        var audioPath: String?
+        var benchmarkDir: String?
+        var reference: String?
+        var precision: CanaryPrecision = .int4
+        var maxFiles = Int.max
+        var maxDuration = Double.greatestFiniteMagnitude
+        var verbose = false
+        var sourceLang: CanaryLanguage = .english
+        var targetLang: CanaryLanguage?
+        var translateBenchmarkManifest: String?
+        var useVad = false
+        var vadMinSilence: TimeInterval = 0.75
+
+        var i = 0
+        while i < arguments.count {
+            switch arguments[i] {
+            case "--fp16": precision = .fp16
+            case "--int8": precision = .int8
+            case "--int4": precision = .int4
+            case "--reference":
+                i += 1
+                if i < arguments.count { reference = arguments[i] }
+            case "--benchmark":
+                i += 1
+                if i < arguments.count { benchmarkDir = arguments[i] }
+            case "--translate-benchmark":
+                i += 1
+                if i < arguments.count { translateBenchmarkManifest = arguments[i] }
+            case "--max-files":
+                i += 1
+                if i < arguments.count { maxFiles = max(Int(arguments[i]) ?? .max, 0) }
+            case "--max-duration":
+                i += 1
+                if i < arguments.count { maxDuration = Double(arguments[i]) ?? .greatestFiniteMagnitude }
+            case "--source-lang", "--translate-to":
+                let flag = arguments[i]
+                i += 1
+                guard i < arguments.count else {
+                    print("Error: \(flag) requires a language code. Supported: \(supportedCodes)")
+                    return
+                }
+                guard let lang = CanaryLanguage(rawValue: arguments[i]) else {
+                    print("Error: unknown \(flag) '\(arguments[i])'. Supported: \(supportedCodes)")
+                    return
+                }
+                if flag == "--source-lang" { sourceLang = lang } else { targetLang = lang }
+            case "--vad": useVad = true
+            case "--vad-min-silence":
+                i += 1
+                if i < arguments.count { vadMinSilence = Double(arguments[i]) ?? vadMinSilence }
+            case "--verbose", "-v": verbose = true
+            case "--help", "-h":
+                printUsage()
+                return
+            default: if audioPath == nil { audioPath = arguments[i] }
+            }
+            i += 1
+        }
+
+        // Flag-combination validation: the language flags change the decode task,
+        // so modes that score against fixed-language references must not compose
+        // with a translation prompt.
+        let isTranslating = targetLang.map { $0 != sourceLang } ?? false
+        if benchmarkDir != nil && translateBenchmarkManifest != nil {
+            print("Error: --benchmark and --translate-benchmark are mutually exclusive")
+            return
+        }
+        if translateBenchmarkManifest != nil && !isTranslating {
+            print("Error: --translate-benchmark requires --translate-to with a language different from --source-lang")
+            return
+        }
+        if isTranslating && (benchmarkDir != nil || reference != nil) {
+            print(
+                "Error: --translate-to cannot be combined with WER scoring (--benchmark/--reference): "
+                    + "hypotheses would be in \(targetLang!.rawValue) while references are transcripts")
+            return
+        }
+        if isTranslating, sourceLang != .english, targetLang != .english {
+            print("Error: canary-1b-v2 only supports translation to or from English (en ↔ X)")
+            return
+        }
+
+        do {
+            logger.info("Loading Canary models (\(precision.rawValue))...")
+            let loadStart = Date()
+            let manager = try await CanaryManager.load(
+                precision: precision, source: sourceLang, target: targetLang ?? sourceLang)
+            if let target = targetLang, target != sourceLang {
+                logger.info("Speech translation: \(sourceLang.rawValue) → \(target.rawValue)")
+            }
+            if verbose { logger.info("Loaded in \(String(format: "%.1f", Date().timeIntervalSince(loadStart)))s") }
+            let vad: VadManager? = useVad ? try await VadManager() : nil
+            let segmentation = CanaryConfig.vadSegmentation(minSilence: vadMinSilence)
+            if vad != nil {
+                logger.info("VAD segmentation on: pauses ≥ \(vadMinSilence)s, pieces ≤ 15 s, no seam merge")
+            }
+
+            if let dir = benchmarkDir {
+                await runBenchmark(
+                    manager: manager, dir: dir, maxFiles: maxFiles, maxDuration: maxDuration, precision: precision)
+                return
+            }
+
+            if let manifest = translateBenchmarkManifest {
+                await runTranslateBenchmark(
+                    manager: manager, vad: vad, segmentation: segmentation, manifestPath: manifest,
+                    maxFiles: maxFiles, precision: precision)
+                return
+            }
+
+            guard let audioPath else {
+                logger.error("Error: No audio file specified")
+                printUsage()
+                return
+            }
+            let audioURL = URL(fileURLWithPath: audioPath)
+            guard FileManager.default.fileExists(atPath: audioURL.path) else {
+                logger.error("Error: Audio file not found: \(audioPath)")
+                return
+            }
+
+            let duration = audioDuration(audioURL)
+            let start = Date()
+            let text: String
+            if let vad {
+                text = try await manager.transcribe(audioURL: audioURL, vad: vad, segmentation: segmentation)
+            } else {
+                text = try await manager.transcribe(audioURL: audioURL)
+            }
+            let elapsed = Date().timeIntervalSince(start)
+            let rtfx = duration > 0 ? duration / elapsed : 0
+
+            print(text)
+            logger.info(
+                "Time \(String(format: "%.2f", elapsed))s | audio \(String(format: "%.2f", duration))s | RTFx \(String(format: "%.2f", rtfx))x"
+            )
+            if let reference {
+                let m = WERCalculator.calculateWERMetrics(hypothesis: text, reference: reference)
+                logger.info(
+                    "WER \(String(format: "%.2f", m.wer * 100))% (\(m.substitutions)S \(m.deletions)D \(m.insertions)I / \(m.totalWords)w)"
+                )
+            }
+        } catch {
+            logger.error("Transcription failed: \(error)")
+        }
+    }
+
+    // MARK: - Translation benchmark (FLEURS-style pairs manifest)
+
+    private struct TranslatePair: Codable {
+        let audio: String
+        let reference: String
+        let id: String?
+    }
+
+    /// Run speech translation over a JSON manifest of `{audio, reference}` pairs
+    /// and report corpus BLEU + RTFx. Writes `<manifest>.hyps.json` with parallel
+    /// hypotheses/references for exact scoring via sacrebleu.
+    private static func runTranslateBenchmark(
+        manager: CanaryManager, vad: VadManager?, segmentation: VadSegmentationConfig, manifestPath: String,
+        maxFiles: Int, precision: CanaryPrecision
+    ) async {
+        let url = URL(fileURLWithPath: manifestPath)
+        guard let data = try? Data(contentsOf: url),
+            let pairs = try? JSONDecoder().decode([TranslatePair].self, from: data)
+        else {
+            logger.error("Could not read pairs manifest at \(manifestPath)")
+            return
+        }
+        let subset = Array(pairs.prefix(maxFiles))
+        logger.info("Translation benchmark (\(precision.rawValue)): \(subset.count)/\(pairs.count) pairs")
+
+        var hyps: [String] = []
+        var refs: [String] = []
+        var totalAudio = 0.0
+        var totalTime = 0.0
+        var failed = 0
+        for (idx, pair) in subset.enumerated() {
+            let audioURL = URL(fileURLWithPath: pair.audio)
+            do {
+                let duration = audioDuration(audioURL)
+                let start = Date()
+                let hyp: String
+                if let vad {
+                    hyp = try await manager.transcribe(audioURL: audioURL, vad: vad, segmentation: segmentation)
+                } else {
+                    hyp = try await manager.transcribe(audioURL: audioURL)
+                }
+                totalTime += Date().timeIntervalSince(start)
+                totalAudio += duration
+                hyps.append(hyp)
+                refs.append(pair.reference)
+            } catch {
+                failed += 1
+                logger.warning("Failed \(pair.audio): \(error.localizedDescription)")
+            }
+            if (idx + 1) % 50 == 0 {
+                let bleuSoFar = BLEUCalculator.corpusBLEU(hypotheses: hyps, references: refs)
+                logger.info(
+                    "  \(idx + 1)/\(subset.count) | BLEU \(String(format: "%.2f", bleuSoFar)) | RTFx \(String(format: "%.2f", totalAudio / max(totalTime, 0.001)))x"
+                )
+            }
+        }
+
+        let bleu = BLEUCalculator.corpusBLEU(hypotheses: hyps, references: refs)
+        print("Pairs: \(hyps.count) scored, \(failed) failed")
+        print("Corpus BLEU (in-process, 13a-style): \(String(format: "%.2f", bleu))")
+        print(
+            "Audio \(String(format: "%.1f", totalAudio))s | inference \(String(format: "%.1f", totalTime))s | RTFx \(String(format: "%.2f", totalAudio / max(totalTime, 0.001)))x"
+        )
+
+        let outURL = url.deletingPathExtension().appendingPathExtension("hyps.json")
+        do {
+            let out = try JSONSerialization.data(
+                withJSONObject: ["hypotheses": hyps, "references": refs], options: [.prettyPrinted])
+            try out.write(to: outURL)
+            print("Hypotheses written to \(outURL.path) (score exactly with: sacrebleu)")
+        } catch {
+            logger.error("Failed to write hypotheses JSON to \(outURL.path): \(error)")
+        }
+    }
+
+    // MARK: - Benchmark (LibriSpeech-style directory)
+
+    private static func runBenchmark(
+        manager: CanaryManager, dir: String, maxFiles: Int, maxDuration: Double, precision: CanaryPrecision
+    ) async {
+        let root = URL(fileURLWithPath: dir)
+        let refs = loadLibriSpeechReferences(root: root)
+        var audios = findAudio(root: root).sorted { $0.lastPathComponent < $1.lastPathComponent }
+        var skippedLong = 0
+        if maxDuration < .greatestFiniteMagnitude {
+            let before = audios.count
+            audios = audios.filter { audioDuration($0) <= maxDuration }
+            skippedLong = before - audios.count
+        }
+        guard !audios.isEmpty else {
+            logger.error("No .wav/.flac files found under \(dir)")
+            return
+        }
+        let files = Array(audios.prefix(maxFiles))
+        logger.info(
+            "Benchmarking Canary (\(precision.rawValue)) on \(files.count) files (refs: \(refs.count), skipped \(skippedLong) > \(maxDuration)s)..."
+        )
+
+        var totalAudio = 0.0
+        var totalCompute = 0.0
+        var totalWords = 0
+        var totalErrors = 0
+        var scored = 0
+
+        for (idx, url) in files.enumerated() {
+            do {
+                let duration = audioDuration(url)
+                let start = Date()
+                let hyp = try await manager.transcribe(audioURL: url)
+                let elapsed = Date().timeIntervalSince(start)
+                totalAudio += duration
+                totalCompute += elapsed
+
+                let key = url.deletingPathExtension().lastPathComponent
+                if let ref = refs[key] {
+                    let m = WERCalculator.calculateWERMetrics(hypothesis: hyp, reference: ref)
+                    totalErrors += Int((m.wer * Double(m.totalWords)).rounded())
+                    totalWords += m.totalWords
+                    scored += 1
+                }
+                if (idx + 1) % 10 == 0 || idx + 1 == files.count {
+                    logger.info("  \(idx + 1)/\(files.count) done")
+                }
+            } catch {
+                logger.error("  failed \(url.lastPathComponent): \(error)")
+            }
+        }
+
+        let rtfx = totalCompute > 0 ? totalAudio / totalCompute : 0
+        let wer = totalWords > 0 ? Double(totalErrors) / Double(totalWords) * 100 : -1
+        print("")
+        print("===== Canary \(precision.rawValue) benchmark =====")
+        print("Files          : \(files.count) (\(scored) scored)")
+        print("Audio total    : \(String(format: "%.1f", totalAudio))s")
+        print("Compute total  : \(String(format: "%.1f", totalCompute))s")
+        print("RTFx           : \(String(format: "%.2f", rtfx))x")
+        if wer >= 0 { print("WER            : \(String(format: "%.2f", wer))% (\(totalWords) words)") }
+        print("================================")
+    }
+
+    private static func findAudio(root: URL) -> [URL] {
+        guard let en = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return [] }
+        var out: [URL] = []
+        for case let u as URL in en where ["wav", "flac"].contains(u.pathExtension.lowercased()) {
+            out.append(u)
+        }
+        return out
+    }
+
+    /// LibriSpeech `*.trans.txt`: each line is `<utt-id> TRANSCRIPT`.
+    private static func loadLibriSpeechReferences(root: URL) -> [String: String] {
+        var map: [String: String] = [:]
+        guard let en = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return map }
+        for case let u as URL in en where u.lastPathComponent.hasSuffix(".trans.txt") {
+            guard let content = try? String(contentsOf: u, encoding: .utf8) else { continue }
+            for line in content.split(separator: "\n") {
+                let parts = line.split(separator: " ", maxSplits: 1)
+                if parts.count == 2 { map[String(parts[0])] = String(parts[1]) }
+            }
+        }
+        return map
+    }
+
+    private static func audioDuration(_ url: URL) -> Double {
+        let asset = AVURLAsset(url: url)
+        return CMTimeGetSeconds(asset.duration)
+    }
+
+    private static var supportedCodes: String {
+        CanaryLanguage.allCases.map(\.rawValue).sorted().joined(separator: ", ")
+    }
+
+    private static func printUsage() {
+        print(
+            """
+            Usage:
+              fluidaudio canary-transcribe <audio-file> [options]
+              fluidaudio canary-transcribe --benchmark <librispeech-dir> [options]
+
+            Canary-1B-v2 attention encoder-decoder ASR (25 European languages, 15 s window). Beta model conversion.
+
+            Options:
+              --int4         int4 encoder/decoder (ANE, ~573 MB, iOS18) — default
+              --fp16         fp16 encoder/decoder (ANE, exact parity, iOS17)
+              --int8         int8 encoder/decoder (CPU only)
+              --translate-to L  translate speech to language L (ISO 639-1, e.g. de)
+              --source-lang L   spoken language (default en)
+              --vad          split long audio at pauses (Silero VAD) into ≤ 15 s pieces instead of
+                             overlap chunking; recommended for translation of audio > 15 s
+              --vad-min-silence S  pause length that ends a piece with --vad (default 0.75)
+              --reference T  reference transcript for single-file WER
+              --benchmark D  run over a LibriSpeech-style dir (uses *.trans.txt refs)
+              --translate-benchmark M  BLEU over a JSON manifest of {audio, reference}
+                             pairs (requires --translate-to; not combinable
+                             with --benchmark/--reference)
+              --max-files N  limit benchmark file count
+              --verbose,-v   print load + per-file timing
+              --help,-h      show this help
+            """
+        )
+    }
+}
+#endif
