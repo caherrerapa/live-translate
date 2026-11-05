@@ -1,0 +1,189 @@
+{
+  "version": 1,
+  "notes": "The app downloads only entries in this file. Size and sha256 are filled when the spike pins a build. A model with export_status other than ready is listed so the choice is visible, and the app keeps it disabled.",
+  "latency_presets": {
+    "fast": "smallest trained chunk",
+    "balanced": "default_chunk_ms",
+    "accurate": "largest trained chunk"
+  },
+  "models": [
+    {
+      "id": "typhoon-asr-streaming-nemotron-0.6b",
+      "task": "asr",
+      "languages": ["th"],
+      "title": "Typhoon ASR Streaming 0.6B",
+      "hf_repo": "typhoon-ai/typhoon-asr-streaming-nemotron-0.6b",
+      "revision": null,
+      "runtime": "onnx-streaming-rnnt",
+      "platforms": ["macos", "ios"],
+      "quality_tier": "best",
+      "chunk_ms": [80, 480, 1040],
+      "default_chunk_ms": 480,
+      "language_prompt": "th-TH",
+      "license": "OpenMDW-1.1",
+      "export_status": "needs-export",
+      "note": "Best streaming Thai model. Keeps English words mixed into Thai. Mac default. iPhone only after the device spike passes. Paper: arXiv:2609.14991."
+    },
+    {
+      "id": "typhoon-asr-streaming-115m",
+      "task": "asr",
+      "languages": ["th"],
+      "title": "Typhoon ASR Streaming 115M",
+      "hf_repo": "typhoon-ai/typhoon-asr-streaming-115m",
+      "revision": null,
+      "runtime": "onnx-streaming-rnnt",
+      "platforms": ["macos", "ios"],
+      "quality_tier": "device",
+      "chunk_ms": [80, 480, 1040],
+      "default_chunk_ms": 480,
+      "language_prompt": null,
+      "license": "CC-BY-4.0",
+      "export_status": "needs-export",
+      "note": "iPhone default. Weaker on English mixed into Thai. Streaming CER 19.4% on TVSpeech at 1040 ms. Attribute SCB 10X / Typhoon in the model screen."
+    },
+    {
+      "id": "nemotron-3.5-asr-streaming-0.6b-en",
+      "task": "asr",
+      "languages": ["en"],
+      "title": "Nemotron 3.5 ASR Streaming 0.6B, English",
+      "hf_repo": "nvidia/nemotron-3.5-asr-streaming-0.6b",
+      "revision": null,
+      "runtime": "onnx-streaming-rnnt",
+      "platforms": ["macos", "ios"],
+      "quality_tier": "best",
+      "chunk_ms": [80, 160, 320, 560, 1120],
+      "default_chunk_ms": 320,
+      "language_prompt": "en-US",
+      "license": "OpenMDW-1.1",
+      "export_status": "needs-export",
+      "note": "English is transcription-ready. Thai on this checkpoint is adaptation-ready and is not used. Community ONNX and Core ML files are spike inputs, not the pinned release."
+    },
+    {
+      "id": "chindamt-4b-4bit",
+      "task": "mt",
+      "languages": ["th", "en"],
+      "title": "ChindaMT 4B, 4-bit",
+      "hf_repo": "iapp/ChindaMT-4B",
+      "revision": null,
+      "runtime": "causal-lm",
+      "platforms": ["macos"],
+      "quality_tier": "best",
+      "chunk_ms": [],
+      "default_chunk_ms": null,
+      "language_prompt": null,
+      "license": "Apache-2.0",
+      "export_status": "needs-quantized-build",
+      "note": "Mac translation model, both directions. Called on a stable prefix of the current turn, not on every audio chunk. A community MLX 4-bit conversion may be the build we pin after a quality check."
+    },
+    {
+      "id": "chindamt-2b",
+      "task": "mt",
+      "languages": ["th", "en"],
+      "title": "ChindaMT 2B",
+      "hf_repo": "iapp/ChindaMT-2B",
+      "revision": null,
+      "runtime": "causal-lm",
+      "platforms": ["macos"],
+      "quality_tier": "fallback",
+      "chunk_ms": [],
+      "default_chunk_ms": null,
+      "language_prompt": null,
+      "license": "Apache-2.0",
+      "export_status": "needs-quantized-build",
+      "note": "Used if ChindaMT 4B misses the balanced lag on the Mac."
+    },
+    {
+      "id": "chindamt-0.8b",
+      "task": "mt",
+      "languages": ["th", "en"],
+      "title": "ChindaMT 0.8B",
+      "hf_repo": "iapp/ChindaMT-0.8B",
+      "revision": null,
+      "runtime": "causal-lm",
+      "platforms": ["ios", "macos"],
+      "quality_tier": "device",
+      "chunk_ms": [],
+      "default_chunk_ms": null,
+      "language_prompt": null,
+      "license": "Apache-2.0",
+      "export_status": "needs-quantized-build",
+      "note": "iPhone translation model, both directions."
+    },
+    {
+      "id": "hy-mt2-1.8b",
+      "task": "mt",
+      "languages": ["th", "en"],
+      "title": "Hy-MT2 1.8B",
+      "hf_repo": "tencent/Hy-MT2-1.8B",
+      "revision": null,
+      "runtime": "causal-lm",
+      "platforms": [],
+      "quality_tier": "hold",
+      "chunk_ms": [],
+      "default_chunk_ms": null,
+      "language_prompt": null,
+      "license": "unreviewed",
+      "export_status": "hold-for-license",
+      "note": "Disabled. Multilingual fallback, including Thai, with a 1.25-bit GGUF Tencent describes as 440 MB. Empty platforms until the license is written into this file."
+    },
+    {
+      "id": "fluidaudio-ls-eend",
+      "task": "diarization",
+      "languages": [],
+      "title": "FluidAudio LS-EEND",
+      "hf_repo": null,
+      "revision": null,
+      "runtime": "coreml",
+      "platforms": ["macos", "ios"],
+      "quality_tier": "best",
+      "chunk_ms": [100],
+      "default_chunk_ms": 100,
+      "language_prompt": null,
+      "license": "Apache-2.0",
+      "export_status": "library",
+      "note": "Swift package FluidInference/FluidAudio. Online diarization, up to 10 speakers. The library downloads its own Core ML weights. Session labels only. No voice enrollment."
+    }
+  ],
+  "packs": [
+    {
+      "id": "mac-best",
+      "title": "Mac, best",
+      "platforms": ["macos"],
+      "directions": ["th-en", "en-th"],
+      "recommended": true,
+      "models": [
+        "typhoon-asr-streaming-nemotron-0.6b",
+        "nemotron-3.5-asr-streaming-0.6b-en",
+        "chindamt-4b-4bit",
+        "fluidaudio-ls-eend"
+      ]
+    },
+    {
+      "id": "iphone-default",
+      "title": "iPhone, default",
+      "platforms": ["ios"],
+      "directions": ["th-en", "en-th"],
+      "recommended": true,
+      "models": [
+        "typhoon-asr-streaming-115m",
+        "nemotron-3.5-asr-streaming-0.6b-en",
+        "chindamt-0.8b",
+        "fluidaudio-ls-eend"
+      ]
+    },
+    {
+      "id": "iphone-quality",
+      "title": "iPhone, quality",
+      "platforms": ["ios"],
+      "directions": ["th-en", "en-th"],
+      "recommended": false,
+      "models": [
+        "typhoon-asr-streaming-nemotron-0.6b",
+        "nemotron-3.5-asr-streaming-0.6b-en",
+        "chindamt-0.8b",
+        "fluidaudio-ls-eend"
+      ],
+      "note": "Offered only on iPhones where the 0.6B Thai model finishes a chunk before the next one arrives."
+    }
+  ]
+}

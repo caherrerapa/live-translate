@@ -1,0 +1,15 @@
+.DS_Store
+.venv/
+.swiftpm/
+.build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Weights downloaded at runtime. The catalog in docs/ stays.
+models/
+*.onnx
+*.mlmodelc
+*.mlpackage
+*.gguf
+*.safetensors
