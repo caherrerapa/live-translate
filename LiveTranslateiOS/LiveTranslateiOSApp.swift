@@ -42,6 +42,15 @@ struct PhoneRoot: View {
             shell: UIDevice.current.userInterfaceIdiom == .pad ? .pad : .phone
         )
         .task {
+            #if DEBUG
+            // LT_DEMO=1 fills the screen with the design's content, for simulator screenshots.
+            if ProcessInfo.processInfo.environment["LT_DEMO"] != nil {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                controller.loadDemo()
+                controller.phoneShowsNotes = ProcessInfo.processInfo.environment["LT_DEMO"] == "summary"
+                return
+            }
+            #endif
             guard ProcessInfo.processInfo.environment["LIVE_TRANSLATE_IOS_LISTEN"] == "1" else { return }
             await controller.refreshInstall()
             controller.listenOrStop()

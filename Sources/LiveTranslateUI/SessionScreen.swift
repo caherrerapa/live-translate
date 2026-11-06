@@ -127,60 +127,23 @@ struct SessionScreen: View {
 
     // MARK: Phone
 
+    /// The phone in the live-session design: chrome.navigationBar puts direction and Models
+    /// at the top, chrome.pageSwitch gives Conversation / Summary, chrome.bottomProminent is
+    /// the Listening pill, and chrome.bottomBeside puts Highlight next to it.
+    @ViewBuilder
     private var phoneBody: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                if !chrome.pageSwitch.isEmpty {
-                    Picker("Page", selection: $controller.phoneShowsNotes) {
-                        if chrome.pageSwitch.contains(.conversation) {
-                            Text("Conversation").tag(false)
-                        }
-                        if chrome.pageSwitch.contains(.notesPage) {
-                            Text("Notes").tag(true)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                }
-                StatusStrip(controller: controller)
-                if controller.phoneShowsNotes {
-                    NotesColumn(controller: controller)
-                } else {
-                    panels
-                }
-                HStack(spacing: 12) {
-                    ForEach(chrome.bottomBeside, id: \.self) { control in
-                        if control == .highlight {
-                            Button(action: controller.highlight) {
-                                Label("Highlight", systemImage: "pin")
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.large)
-                        }
-                    }
-                    if chrome.bottomProminent == chrome.prominent {
-                        listenButton
-                            .controlSize(.large)
-                            .frame(maxWidth: .infinity)
-                    }
-                }
-                .padding()
-            }
-            .navigationTitle("Live Translate")
-            .toolbar {
-                if chrome.navigationBar.contains(.direction) {
-                    ToolbarItem { directionPicker }
-                }
-                ToolbarItem { copyMenu }
-                if chrome.navigationBar.contains(.models) {
-                    ToolbarItem {
-                        Button { controller.showModels = true } label: { Image(systemName: "shippingbox") }
-                            .accessibilityLabel("Models")
-                    }
-                }
-            }
-        }
+        #if os(iOS)
+        PhoneSessionView(
+            controller: controller,
+            arrangement: arrangement,
+            pages: chrome.pageSwitch,
+            beside: chrome.bottomProminent == chrome.prominent ? chrome.bottomBeside : []
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(chrome.navigationBar.contains(.direction) ? "Live Translate" : "")
+        #else
+        EmptyView()
+        #endif
     }
 
     // MARK: Mac bar
