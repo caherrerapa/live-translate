@@ -171,9 +171,14 @@ final class SessionController: ObservableObject {
         let files = pinnedFiles(packID: engine.packID)
         let installed = await installer.isInstalled(packID: engine.packID, files: files)
         // A downloaded speech model is enough to listen; the session engine gates on this flag.
-        mutate { $0.packInstalled = installed || hasSelectedSpeech }
-        if installed || hasSelectedSpeech {
+        // Listen needs a speech model for the spoken language: the pack's (Thai, English) or a downloaded one.
+        let source = engine.direction.source
+        let speechReady = (installed && source.inPack) || hasSelectedSpeech
+        mutate { $0.packInstalled = speechReady }
+        if speechReady {
             statusLine = ""
+        } else if installed || !source.inPack {
+            statusLine = "No \(source.title) speech model yet. Open Manage languages and download one from \(source.title) streaming."
         } else {
             statusLine = "\(packName) is not on this machine."
         }
@@ -279,7 +284,7 @@ final class SessionController: ObservableObject {
     }
 
     func swapDirection() {
-        setDirection(engine.direction == .thaiToEnglish ? .englishToThai : .thaiToEnglish)
+        setDirection(engine.direction.reversed)
     }
 
     func setPreset(_ preset: LatencyPreset) {
@@ -291,7 +296,8 @@ final class SessionController: ObservableObject {
     /// The worker keeps it resident, so Listen starts at once and a swap back is free.
     func prepareSpeech() {
         guard let plan = speechPlan() else {
-            speechStatus = engine.packInstalled ? .failed("No speech model for \(engine.direction.source == .thai ? "Thai" : "English").") : .idle
+            let language = engine.direction.source
+            speechStatus = .failed("No \(language.title) speech model yet. Open Manage languages → \(language.title) streaming.")
             return
         }
         if plan.key == activeSpeechKey, case .ready = speechStatus { return }
@@ -350,7 +356,7 @@ final class SessionController: ObservableObject {
             }
         }
         #if os(macOS)
-        guard engine.packInstalled else { return nil }
+        guard engine.packInstalled, language.inPack else { return nil }
         let chunk = engine.chunkMilliseconds() ?? 1040
         let precision = PackPolicy.speechPrecision(packID: engine.packID)
         let packID = engine.packID
@@ -702,7 +708,7 @@ final class SessionController: ObservableObject {
 
     func noteText(_ text: String) -> String {
         guard let wanted = summaryLanguage, wanted != noteLanguage else { return text }
-        return translatedNoteText[text] ?? text
+        return translatedNoteText["\(wanted.code)|\(text)"] ?? text
     }
 
     func setSummaryLanguage(_ language: SpeechLanguage) {
@@ -710,7 +716,7 @@ final class SessionController: ObservableObject {
         guard language != noteLanguage else { return }
         let note = displayedRecord.note
         let texts = (note.summary + note.decisions + note.openQuestions + note.highlights + note.actions).map(\.text)
-        noteTranslationQueue = texts.filter { translatedNoteText[$0] == nil }
+        noteTranslationQueue = texts.filter { translatedNoteText["\(language.code)|\($0)"] == nil }
         #if os(macOS)
         translateNextNoteText()
         #endif
@@ -873,7 +879,7 @@ final class SessionController: ObservableObject {
         if engine.listening { stopListening() }
         library.select(candidate, for: task)
         switch task {
-        case .thaiSpeech, .englishSpeech:
+        case .speech:
             activeSpeechKey = nil
             Task { await refreshInstall() }
         case .translation:
@@ -911,7 +917,7 @@ final class SessionController: ObservableObject {
                 probe.arguments = [
                     "--probe-speech", directory.path,
                     "--dim", String(candidate.featureDim),
-                    "--language", language == .thai ? "th" : "en",
+                    "--language", language.code,
                 ]
                 probe.standardOutput = FileHandle.nullDevice
                 probe.standardError = FileHandle.nullDevice
@@ -996,25 +1002,40 @@ final class SessionController: ObservableObject {
     // MARK: Translation
 
     #if os(macOS)
+    /// The translator for the current direction: the user's pick if it covers the pair,
+    /// the pack's ChindaMT for Thai ⇄ English, else any downloaded multilingual model.
     private var translatorModel: URL? {
-        if let candidate = library.selected(.translation) {
-            return library.modelDirectory(for: candidate)
+        let direction = engine.direction
+        if let chosen = library.selected(.translation), chosen.translates(direction) {
+            return library.modelDirectory(for: chosen)
         }
-        return OnDevicePaths.translatorDirectory(packID: engine.packID)
+        if direction.isThaiEnglish, let pack = OnDevicePaths.translatorDirectory(packID: engine.packID) {
+            return pack
+        }
+        if let multilingual = library.installed.first(where: { $0.task == .translation && $0.multilingual == true }) {
+            return library.modelDirectory(for: multilingual)
+        }
+        return nil
     }
 
     /// Starts the MLX translator early so its weights are on the GPU before the first turn.
+    /// A direction that needs another model restarts the process with that model.
     private func prepareTranslator() {
-        guard translator == nil, engine.packInstalled, let model = translatorModel else {
-            if translator == nil, engine.packInstalled, translatorModel == nil {
-                translatorStatus = .failed("No translation model on this Mac.")
-            }
+        guard let model = translatorModel else {
+            translator?.stop()
+            translator = nil
+            let direction = engine.direction
+            translatorStatus = .failed("No translator for \(direction.source.title) → \(direction.target.title). Download a multilingual model in Manage languages → Translation.")
             return
         }
+        if let translator, translator.modelDirectory == model { return }
+        guard !translationRunning else { return }
+        translator?.stop()
+        translator = nil
         let chinda = ChindaTranslator()
         if chinda.start(model: model) {
             translator = chinda
-            translatorStatus = .ready("\(model.lastPathComponent) · \(ModelRuntime.mlx.accelerator)")
+            translatorStatus = .ready("\(model.lastPathComponent.replacingOccurrences(of: "translation__", with: "")) · \(ModelRuntime.mlx.accelerator)")
         } else {
             translatorStatus = .failed("The MLX runtime is not in this build.")
         }
@@ -1056,12 +1077,12 @@ final class SessionController: ObservableObject {
         if translator == nil { prepareTranslator() }
         guard let translator else { return }
         let text = noteTranslationQueue.removeFirst()
-        let direction: TranslationDirection = noteLanguage == .thai ? .thaiToEnglish : .englishToThai
+        let direction = TranslationDirection(source: noteLanguage, target: summaryLanguage ?? noteLanguage)
         translationRunning = true
         translator.translate(generation: -1, prompt: TranslationPrompt.text(source: text, direction: direction)) { [weak self] _, translated in
             guard let self else { return }
             self.translationRunning = false
-            if !translated.isEmpty { self.translatedNoteText[text] = translated }
+            if !translated.isEmpty { self.translatedNoteText["\(direction.target.code)|\(text)"] = translated }
             if let request = self.engine.pendingTranslation {
                 self.translationRunning = true
                 self.runTranslation(request)

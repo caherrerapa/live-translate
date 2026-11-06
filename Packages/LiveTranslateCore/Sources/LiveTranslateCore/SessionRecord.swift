@@ -51,7 +51,7 @@ struct SessionRecord: Codable, Identifiable, Equatable {
     var isEmpty: Bool { turns.isEmpty && userNotes.isEmpty }
 
     var directionShort: String {
-        direction == .englishToThai ? "EN → TH" : "TH → EN"
+        "\(direction.source.short) → \(direction.target.short)"
     }
 
     static func durationText(_ seconds: TimeInterval) -> String {

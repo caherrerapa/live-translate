@@ -148,8 +148,8 @@ struct CopyMenu: View {
 
     var body: some View {
         let record = controller.displayedRecord
-        let source = record.direction.source == .thai ? "Thai" : "English"
-        let target = record.direction.target == .thai ? "Thai" : "English"
+        let source = record.direction.source.title
+        let target = record.direction.target.title
         Menu {
             Section("Copy this session") {
                 Button { controller.copySession(.original) } label: {
@@ -229,8 +229,8 @@ private struct LanguagePair: View {
     var body: some View {
         let direction = controller.engine.direction
         HStack(spacing: 6) {
-            languageMenu(direction.source) { picked in
-                controller.setDirection(picked == .thai ? .thaiToEnglish : .englishToThai)
+            languageMenu(direction.source, help: "Spoken language") { picked in
+                controller.setDirection(picked == direction.target ? direction.reversed : TranslationDirection(source: picked, target: direction.target))
             }
             Button(action: controller.swapDirection) {
                 Image(systemName: "arrow.left.arrow.right")
@@ -239,21 +239,32 @@ private struct LanguagePair: View {
             }
             .buttonStyle(.borderless)
             .help("Swap languages")
-            languageMenu(direction.target) { picked in
-                controller.setDirection(picked == .thai ? .englishToThai : .thaiToEnglish)
+            languageMenu(direction.target, help: "Translation language") { picked in
+                controller.setDirection(picked == direction.source ? direction.reversed : TranslationDirection(source: direction.source, target: picked))
             }
         }
         .disabled(controller.engine.listening || controller.isViewingPast)
         .help(controller.engine.listening ? "Languages stay fixed until Stop." : "Spoken language ⇄ translation")
     }
 
-    private func languageMenu(_ language: SpeechLanguage, pick: @escaping (SpeechLanguage) -> Void) -> some View {
+    private func languageMenu(_ language: SpeechLanguage, help: String, pick: @escaping (SpeechLanguage) -> Void) -> some View {
         Menu {
-            Button("English") { pick(.english) }
-            Button("Thai") { pick(.thai) }
+            Section(help) {
+                ForEach(SpeechLanguage.allCases) { option in
+                    Button {
+                        pick(option)
+                    } label: {
+                        if option == language {
+                            Label(option.title, systemImage: "checkmark")
+                        } else {
+                            Text(option.title)
+                        }
+                    }
+                }
+            }
         } label: {
             HStack(spacing: 6) {
-                Text(language == .thai ? "Thai" : "English")
+                Text(language.title)
                 Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
             }
             .outlined()
@@ -395,8 +406,8 @@ private struct OfflineCard: View {
     }
 
     private var modelLine: String {
-        let source = controller.engine.direction.source == .thai ? "Thai" : "English"
-        let target = controller.engine.direction.target == .thai ? "Thai" : "English"
+        let source = controller.engine.direction.source.title
+        let target = controller.engine.direction.target.title
         switch controller.speechStatus {
         case .ready(let name): return "\(source) ⇄ \(target) · \(name)"
         case .loading(let name): return "Loading \(name)…"
@@ -445,8 +456,8 @@ struct TranscriptPane: View {
         }
     }
 
-    private var sourceName: String { record.direction.source == .thai ? "Thai" : "English" }
-    private var targetName: String { record.direction.target == .thai ? "Thai" : "English" }
+    private var sourceName: String { record.direction.source.title }
+    private var targetName: String { record.direction.target.title }
 
     var body: some View {
         let layout = controller.layout
@@ -892,8 +903,8 @@ struct SummaryInspector: View {
                 Text("Summary").font(.title3.weight(.semibold))
                 Spacer()
                 Picker("Language", selection: languageBinding) {
-                    Text("EN").tag(SpeechLanguage.english)
-                    Text("TH").tag(SpeechLanguage.thai)
+                    Text(record.direction.source.short).tag(record.direction.source)
+                    Text(record.direction.target.short).tag(record.direction.target)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()

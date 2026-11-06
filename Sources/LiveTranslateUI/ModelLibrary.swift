@@ -398,8 +398,7 @@ extension HubCompatibility {
     static func prefilter(task: ModelTask, listing: HubListing) -> Bool {
         let tags = Set(listing.tags.map { $0.lowercased() })
         switch task {
-        case .thaiSpeech, .englishSpeech:
-            guard let language = task.speechLanguage else { return false }
+        case .speech(let language):
             let name = listing.id.lowercased()
             // Formats no runtime here can load, and decoder types the transducer loop does not run.
             let foreign = ["gguf", "mlx", "litert", "webgpu", "tflite", "ctc", "paraformer", "non-streaming", "whisper"]

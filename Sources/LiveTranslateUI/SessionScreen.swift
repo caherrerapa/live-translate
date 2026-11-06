@@ -443,11 +443,11 @@ struct SessionScreen: View {
     }
 
     private var sourceTitle: String {
-        controller.engine.direction.source == .thai ? "Thai" : "English"
+        controller.engine.direction.source.title
     }
 
     private var targetTitle: String {
-        controller.engine.direction.target == .thai ? "Thai" : "English"
+        controller.engine.direction.target.title
     }
 
     private var directionBinding: Binding<TranslationDirection> {
@@ -747,25 +747,38 @@ struct ModelScreen: View {
     @ObservedObject var controller: SessionController
     @ObservedObject var library: ModelLibrary
     @Environment(\.dismiss) private var dismiss
-    @State private var page: Page = .task(.thaiSpeech)
+    @State private var page: Page = .speech
+    @State private var speechLanguage: SpeechLanguage = .thai
 
     enum Page: Hashable {
+        case speech
+        case translation
+        case notes
         case packs
-        case task(ModelTask)
     }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 Picker("Show", selection: $page) {
-                    ForEach(ModelTask.allCases) { task in
-                        Label(task.title, systemImage: task.systemImage).tag(Page.task(task))
-                    }
+                    Label("Speech", systemImage: "waveform").tag(Page.speech)
+                    Label("Translation", systemImage: "character.bubble").tag(Page.translation)
+                    Label("Notes", systemImage: "list.bullet.rectangle").tag(Page.notes)
                     Label("Packs", systemImage: "shippingbox").tag(Page.packs)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .padding(12)
+                if page == .speech {
+                    // Only streaming models for the chosen language are listed.
+                    Picker("Language", selection: $speechLanguage) {
+                        ForEach(SpeechLanguage.allCases) { language in
+                            Text(language.title).tag(language)
+                        }
+                    }
+                    .frame(maxWidth: 260)
+                    .padding(.bottom, 8)
+                }
                 if controller.engine.listening {
                     Label("Downloads wait until Listen stops.", systemImage: "mic.fill")
                         .font(.callout)
@@ -776,9 +789,13 @@ struct ModelScreen: View {
                 switch page {
                 case .packs:
                     packList
-                case .task(let task):
-                    TaskModelList(task: task, controller: controller, library: library)
-                        .id(task)
+                case .speech:
+                    TaskModelList(task: .speech(speechLanguage), controller: controller, library: library)
+                        .id(speechLanguage)
+                case .translation:
+                    TaskModelList(task: .translation, controller: controller, library: library)
+                case .notes:
+                    TaskModelList(task: .notes, controller: controller, library: library)
                 }
             }
             .navigationTitle("Models")
@@ -790,7 +807,7 @@ struct ModelScreen: View {
         }
         .frame(minWidth: 720, minHeight: 560)
         .onAppear {
-            page = .task(.speech(controller.engine.direction.source))
+            speechLanguage = controller.engine.direction.source
         }
     }
 
@@ -907,8 +924,9 @@ struct TaskModelList: View {
         guard let pack = controller.catalog.pack(id: controller.engine.packID) else { return "Pack model" }
         let id: String?
         switch task {
-        case .thaiSpeech: id = PackPolicy.speechID(pack: pack, catalog: controller.catalog, language: .thai)
-        case .englishSpeech: id = PackPolicy.speechID(pack: pack, catalog: controller.catalog, language: .english)
+        case .speech(let language):
+            guard language.inPack else { return "None in the pack" }
+            id = PackPolicy.speechID(pack: pack, catalog: controller.catalog, language: language)
         case .translation: id = PackPolicy.translatorID(pack: pack, catalog: controller.catalog)
         case .notes: id = PackPolicy.notesID(pack: pack, catalog: controller.catalog)
         }
@@ -974,6 +992,9 @@ struct CandidateRow: View {
                     }
                     if candidate.runtime == .coreMLNemotron {
                         Text("Lowest CPU use")
+                    }
+                    if candidate.task == .translation {
+                        Text(candidate.multilingual == true ? "Many languages" : "Thai ⇄ English")
                     }
                 }
                 .font(.caption)

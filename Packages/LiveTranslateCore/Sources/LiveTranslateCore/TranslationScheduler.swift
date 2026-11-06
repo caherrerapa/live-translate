@@ -145,16 +145,15 @@ struct TranslationScheduler {
     ) -> Bool {
         let units = units(sourcePrefix, language: direction.source)
         let growth = max(0, units - countedUnits)
-        let threshold = direction.source == .thai ? thaiCharacterThreshold : englishWordThreshold
+        // Unspaced scripts (Thai, Chinese, Japanese) grow by characters; the rest by words.
+        let threshold = direction.source.countsCharacters ? thaiCharacterThreshold : englishWordThreshold
         return endpoint ? !sourcePrefix.isEmpty : growth >= threshold
     }
 
     static func units(_ text: String, language: SpeechLanguage) -> Int {
-        switch language {
-        case .english:
-            return text.split { $0.isWhitespace || $0.isNewline }.count
-        case .thai:
+        if language.countsCharacters {
             return text.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) }.count
         }
+        return text.split { $0.isWhitespace || $0.isNewline }.count
     }
 }

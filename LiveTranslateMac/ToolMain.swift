@@ -106,7 +106,7 @@ enum SpeechCLI {
             exit(2)
         }
         let preset = ChunkPolicy.preset(named: value("--preset"))
-        let language: SpeechLanguage = value("--language") == "en" ? .english : .thai
+        let language = SpeechLanguage(code: value("--language") ?? "th") ?? .thai
         guard let catalog = try? CatalogFiles.load() else {
             fputs("catalog_missing\n", stderr)
             exit(2)
@@ -120,7 +120,8 @@ enum SpeechCLI {
                 NotesDraft(title: "", titleTurnID: "", summary: [], decisions: [], actions: [], openQuestions: [])
             }
         )
-        engine.direction = language == .thai ? .thaiToEnglish : .englishToThai
+        let fallbackTarget: SpeechLanguage = language == .english ? .thai : .english
+        engine.direction = TranslationDirection(source: language, target: SpeechLanguage(code: value("--target") ?? "") ?? fallbackTarget)
         engine.preset = preset
         let chunk = engine.chunkMilliseconds() ?? 0
         guard let decoder = SherpaStreamingDecoder(
@@ -322,7 +323,7 @@ enum SessionCLI {
             fputs("usage: --session --audio file.wav --language en|th\n", stderr)
             exit(2)
         }
-        let language: SpeechLanguage = value("--language") == "th" ? .thai : .english
+        let language = SpeechLanguage(code: value("--language") ?? "en") ?? .english
         var engine = SessionEngine(
             catalog: catalog,
             packID: PackPolicy.macPackID,
@@ -331,7 +332,8 @@ enum SessionCLI {
                 NotesDraft(title: "", titleTurnID: "", summary: [], decisions: [], actions: [], openQuestions: [])
             }
         )
-        engine.direction = language == .thai ? .thaiToEnglish : .englishToThai
+        let fallbackTarget: SpeechLanguage = language == .english ? .thai : .english
+        engine.direction = TranslationDirection(source: language, target: SpeechLanguage(code: value("--target") ?? "") ?? fallbackTarget)
         let chunk = engine.chunkMilliseconds() ?? 0
         let loadStart = Date()
         let decoder: LiveSpeechDecoder?
@@ -358,7 +360,7 @@ enum SessionCLI {
         }
         print(String(format: "speech_load_s %.2f engine %@", Date().timeIntervalSince(loadStart), decoder.engineLabel))
         let translator = ChindaTranslator()
-        guard translator.start() else {
+        guard translator.start(model: value("--translator").map { URL(fileURLWithPath: $0) }) else {
             fputs("translator_missing\n", stderr)
             exit(4)
         }
@@ -443,7 +445,7 @@ enum ProbeCLI {
         }
         guard let path = value("--probe-speech") else { exit(2) }
         let dim = Int(value("--dim") ?? "80") ?? 80
-        let language: SpeechLanguage = value("--language") == "th" ? .thai : .english
+        let language = SpeechLanguage(code: value("--language") ?? "en") ?? .english
         guard let decoder = SherpaStreamingDecoder(
             directory: URL(fileURLWithPath: path),
             language: language,
@@ -465,16 +467,18 @@ enum HubSearchCLI {
             if let index = args.firstIndex(of: "--install"), index + 1 < args.count {
                 // Download, hash-check, install and probe one English candidate, as the model screen does.
                 let repo = args[index + 1]
+                let task = args.firstIndex(of: "--task").flatMap { ModelTask(rawValue: args[$0 + 1]) } ?? .englishSpeech
                 library.verifyInstall = { candidate, directory in
+                    guard candidate.runtime == .sherpaStreaming else { return MLXSupport.check(directory: directory) }
                     let probe = Process()
                     probe.executableURL = Bundle.main.executableURL
-                    probe.arguments = ["--probe-speech", directory.path, "--dim", String(candidate.featureDim), "--language", "en"]
+                    probe.arguments = ["--probe-speech", directory.path, "--dim", String(candidate.featureDim), "--language", candidate.task.speechLanguage?.code ?? "en"]
                     try? probe.run()
                     probe.waitUntilExit()
                     return probe.terminationStatus == 0 ? nil : "probe failed"
                 }
-                await library.search(.englishSpeech)
-                guard let candidate = library.results[.englishSpeech]?.first(where: { $0.repo == repo }) else {
+                await library.search(task)
+                guard let candidate = library.results[task]?.first(where: { $0.repo == repo }) else {
                     print("not listed \(repo)")
                     exit(1)
                 }
@@ -484,18 +488,19 @@ enum HubSearchCLI {
                     let status = library.status(of: candidate)
                     print("status \(status)")
                     if status == .installed {
-                        print("installed \(library.modelDirectory(for: candidate).path) selected=\(library.selected(.englishSpeech)?.repo ?? "none")")
+                        print("installed \(library.modelDirectory(for: candidate).path) selected=\(library.selected(task)?.repo ?? "none")")
                         exit(0)
                     }
                     if case .failed = status { exit(1) }
                 }
             }
-            for task in ModelTask.allCases {
+            let only = args.firstIndex(of: "--task").flatMap { ModelTask(rawValue: args[$0 + 1]) }
+            for task in ModelTask.allCases where only == nil || only == task {
                 await library.search(task)
                 print("== \(task.title)\(library.searchErrors[task].map { " error: \($0)" } ?? "")")
                 for candidate in library.results[task] ?? [] {
                     let size = ByteCountFormatter.string(fromByteCount: candidate.totalBytes, countStyle: .file)
-                    print("  \(candidate.repo)  [\(candidate.runtime.accelerator)]  \(size)  files=\(candidate.files.count) dim=\(candidate.featureDim)")
+                    print("  \(candidate.repo)  [\(candidate.runtime.accelerator)]  \(size)  files=\(candidate.files.count) dim=\(candidate.featureDim)\(candidate.multilingual == true ? " multilingual" : "")")
                 }
             }
             exit(0)

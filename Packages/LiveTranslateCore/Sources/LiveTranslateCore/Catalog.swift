@@ -1,34 +1,151 @@
 import Foundation
 
-enum SpeechLanguage: String, Codable, Equatable {
+/// A spoken or written language. Thai and English ship in the pack; the others
+/// run with a streaming model and a translator downloaded from Hugging Face.
+/// Raw values are stored in saved sessions and must not change.
+enum SpeechLanguage: String, Codable, Equatable, Hashable, CaseIterable, Identifiable {
     case thai
     case english
+    case chinese
+    case japanese
+    case korean
+    case vietnamese
+    case indonesian
+    case french
+    case german
+    case spanish
 
-    var prompt: String {
+    var id: String { rawValue }
+
+    /// ISO 639-1 code, as Hugging Face tags and model names use it.
+    var code: String {
         switch self {
-        case .thai: return "th-TH"
-        case .english: return "en-US"
+        case .thai: return "th"
+        case .english: return "en"
+        case .chinese: return "zh"
+        case .japanese: return "ja"
+        case .korean: return "ko"
+        case .vietnamese: return "vi"
+        case .indonesian: return "id"
+        case .french: return "fr"
+        case .german: return "de"
+        case .spanish: return "es"
         }
     }
-}
 
-enum TranslationDirection: String, Codable, Equatable {
-    case thaiToEnglish = "th-en"
-    case englishToThai = "en-th"
-
-    var source: SpeechLanguage {
-        self == .thaiToEnglish ? .thai : .english
-    }
-
-    var target: SpeechLanguage {
-        self == .thaiToEnglish ? .english : .thai
+    init?(code: String) {
+        guard let match = Self.allCases.first(where: { $0.code == code.lowercased() }) else { return nil }
+        self = match
     }
 
     var title: String {
         switch self {
-        case .thaiToEnglish: return "Thai → English"
-        case .englishToThai: return "English → Thai"
+        case .thai: return "Thai"
+        case .english: return "English"
+        case .chinese: return "Chinese"
+        case .japanese: return "Japanese"
+        case .korean: return "Korean"
+        case .vietnamese: return "Vietnamese"
+        case .indonesian: return "Indonesian"
+        case .french: return "French"
+        case .german: return "German"
+        case .spanish: return "Spanish"
         }
+    }
+
+    /// Two-letter label for compact controls (EN, TH, ZH…).
+    var short: String { code.uppercased() }
+
+    /// Prompt id for prompt-conditioned NeMo transducers (Nemotron, Typhoon).
+    var prompt: String {
+        switch self {
+        case .thai: return "th-TH"
+        case .english: return "en-US"
+        case .chinese: return "zh-CN"
+        case .japanese: return "ja-JP"
+        case .korean: return "ko-KR"
+        case .vietnamese: return "vi-VN"
+        case .indonesian: return "id-ID"
+        case .french: return "fr-FR"
+        case .german: return "de-DE"
+        case .spanish: return "es-ES"
+        }
+    }
+
+    /// Scripts written without spaces between words. Their growth is counted in characters.
+    var countsCharacters: Bool {
+        switch self {
+        case .thai, .chinese, .japanese: return true
+        default: return false
+        }
+    }
+
+    /// Words used in model names for this language, beside the code.
+    var nameHints: [String] {
+        switch self {
+        case .thai: return ["thai", "typhoon"]
+        case .english: return ["english", "librispeech", "gigaspeech"]
+        case .chinese: return ["chinese", "mandarin", "zh-hans", "wenetspeech", "aishell"]
+        case .japanese: return ["japanese", "reazonspeech"]
+        case .korean: return ["korean", "zeroth"]
+        case .vietnamese: return ["vietnamese"]
+        case .indonesian: return ["indonesian"]
+        case .french: return ["french"]
+        case .german: return ["german"]
+        case .spanish: return ["spanish"]
+        }
+    }
+
+    /// Languages the shipping pack covers with its own speech models.
+    var inPack: Bool { self == .thai || self == .english }
+}
+
+/// Which language is spoken and which one the translation is written in.
+/// Stored as "th-en" style codes, so sessions saved before more languages existed still load.
+struct TranslationDirection: Codable, Equatable, Hashable {
+    var source: SpeechLanguage
+    var target: SpeechLanguage
+
+    init(source: SpeechLanguage, target: SpeechLanguage) {
+        self.source = source
+        self.target = target
+    }
+
+    static let thaiToEnglish = TranslationDirection(source: .thai, target: .english)
+    static let englishToThai = TranslationDirection(source: .english, target: .thai)
+
+    var rawValue: String { "\(source.code)-\(target.code)" }
+
+    init?(rawValue: String) {
+        let parts = rawValue.split(separator: "-").map(String.init)
+        guard parts.count == 2, let source = SpeechLanguage(code: parts[0]), let target = SpeechLanguage(code: parts[1]) else {
+            return nil
+        }
+        self.init(source: source, target: target)
+    }
+
+    init(from decoder: Decoder) throws {
+        let text = try decoder.singleValueContainer().decode(String.self)
+        guard let direction = TranslationDirection(rawValue: text) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unknown direction \(text)"))
+        }
+        self = direction
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    var reversed: TranslationDirection {
+        TranslationDirection(source: target, target: source)
+    }
+
+    var title: String { "\(source.title) → \(target.title)" }
+
+    /// Thai ⇄ English is the pair the pack's ChindaMT model translates.
+    var isThaiEnglish: Bool {
+        Set([source, target]) == [.thai, .english]
     }
 }
 
@@ -226,6 +343,10 @@ enum ChunkPolicy {
         case (.english, .fast): chosen = 80
         case (.english, .balanced): chosen = 320
         case (.english, .accurate): chosen = 1120
+        default:
+            // Languages outside the pack stream with the downloaded model's own chunk.
+            guard let fallback = model.defaultChunkMS ?? model.chunkMS.last else { return nil }
+            chosen = fallback
         }
         guard model.chunkMS.contains(chosen) else { return nil }
         return chosen
@@ -263,7 +384,7 @@ enum PackPolicy {
     static func speechID(pack: ModelPack, catalog: ModelCatalog, language: SpeechLanguage) -> String? {
         pack.models.first { id in
             guard let model = catalog.model(id: id), model.task == "asr" else { return false }
-            return model.languages.contains(language == .thai ? "th" : "en")
+            return model.languages.contains(language.code)
         }
     }
 
@@ -288,12 +409,9 @@ enum TranslatorChoice {
 }
 
 enum TranslationPrompt {
+    /// "Translate English to Thai.\n\nEN: …" is the instruction style ChindaMT was trained on;
+    /// multilingual instruct models follow the same shape for any pair.
     static func text(source: String, direction: TranslationDirection) -> String {
-        switch direction {
-        case .englishToThai:
-            return "Translate English to Thai.\n\nEN: \(source)"
-        case .thaiToEnglish:
-            return "Translate Thai to English.\n\nTH: \(source)"
-        }
+        "Translate \(direction.source.title) to \(direction.target.title).\n\n\(direction.source.short): \(source)"
     }
 }

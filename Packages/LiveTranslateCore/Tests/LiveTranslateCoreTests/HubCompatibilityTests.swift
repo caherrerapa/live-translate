@@ -195,3 +195,71 @@ final class SessionRecordTests: XCTestCase {
         XCTAssertTrue(r.markdown().contains("## Action items"))
     }
 }
+
+final class LanguageTests: XCTestCase {
+    func testDirectionKeepsTheStoredCodes() throws {
+        XCTAssertEqual(TranslationDirection.thaiToEnglish.rawValue, "th-en")
+        XCTAssertEqual(TranslationDirection.englishToThai.rawValue, "en-th")
+        let chinese = TranslationDirection(source: .chinese, target: .english)
+        XCTAssertEqual(chinese.rawValue, "zh-en")
+        XCTAssertEqual(TranslationDirection(rawValue: "zh-en"), chinese)
+        XCTAssertNil(TranslationDirection(rawValue: "xx-en"))
+        let data = try JSONEncoder().encode(["d": chinese])
+        XCTAssertEqual(String(data: data, encoding: .utf8), #"{"d":"zh-en"}"#)
+        // Sessions saved before more languages existed still decode.
+        let old = try JSONDecoder().decode([String: TranslationDirection].self, from: Data(#"{"d":"en-th"}"#.utf8))
+        XCTAssertEqual(old["d"], .englishToThai)
+        XCTAssertEqual(chinese.reversed.rawValue, "en-zh")
+        XCTAssertTrue(TranslationDirection.englishToThai.isThaiEnglish)
+        XCTAssertFalse(chinese.isThaiEnglish)
+    }
+
+    func testThaiEnglishPromptIsUnchanged() {
+        XCTAssertEqual(TranslationPrompt.text(source: "hi", direction: .englishToThai), "Translate English to Thai.\n\nEN: hi")
+        XCTAssertEqual(TranslationPrompt.text(source: "สวัสดี", direction: .thaiToEnglish), "Translate Thai to English.\n\nTH: สวัสดี")
+        XCTAssertEqual(TranslationPrompt.text(source: "你好", direction: TranslationDirection(source: .chinese, target: .english)), "Translate Chinese to English.\n\nZH: 你好")
+    }
+
+    func testChineseGrowsByCharacters() {
+        XCTAssertEqual(TranslationScheduler.units("我们今天开会", language: .chinese), 6)
+        XCTAssertEqual(TranslationScheduler.units("nous parlons ici", language: .french), 3)
+    }
+
+    func testTaskRawValuesStayCompatible() {
+        XCTAssertEqual(ModelTask.speech(.thai).rawValue, "thaiSpeech")
+        XCTAssertEqual(ModelTask.speech(.english).rawValue, "englishSpeech")
+        XCTAssertEqual(ModelTask.speech(.chinese).rawValue, "speech-zh")
+        for task in ModelTask.allCases {
+            XCTAssertEqual(ModelTask(rawValue: task.rawValue), task)
+        }
+    }
+
+    func testChineseStreamingAndMultilingualTranslators() {
+        let sherpa = ["tokens.txt", "encoder-epoch-99-avg-1.int8.onnx", "decoder-epoch-99-avg-1.onnx", "joiner-epoch-99-avg-1.int8.onnx"]
+            .map { HubSibling(path: $0, size: 1, sha256: nil) }
+        func speech(_ repo: String, _ language: SpeechLanguage) -> HubCandidate? {
+            HubCompatibility.candidate(task: .speech(language), repo: repo, siblings: sherpa, tags: [],
+                                       libraryName: nil, pipelineTag: nil, downloads: 0, likes: 0)
+        }
+        XCTAssertNotNil(speech("csukuangfj/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23", .chinese))
+        XCTAssertNotNil(speech("csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20", .chinese))
+        XCTAssertNil(speech("csukuangfj/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23", .japanese))
+        XCTAssertNotNil(speech("csukuangfj/sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10", .japanese))
+        XCTAssertNotNil(speech("k2-fsa/sherpa-onnx-streaming-zipformer-korean-2024-06-16", .korean))
+
+        let mlx = ["config.json", "model.safetensors", "tokenizer.json"].map { HubSibling(path: $0, size: 1, sha256: nil) }
+        func translator(_ repo: String) -> HubCandidate? {
+            HubCompatibility.candidate(task: .translation, repo: repo, siblings: mlx, tags: ["mlx"],
+                                       libraryName: "mlx", pipelineTag: "text-generation", downloads: 0, likes: 0)
+        }
+        let qwen = translator("mlx-community/Qwen2.5-7B-Instruct-4bit")
+        XCTAssertEqual(qwen?.multilingual, true)
+        XCTAssertEqual(qwen?.translates(TranslationDirection(source: .chinese, target: .english)), true)
+        let chinda = translator("veha/ChindaMT-4B-MLX-8bit")
+        XCTAssertEqual(chinda?.multilingual, false)
+        XCTAssertEqual(chinda?.translates(.englishToThai), true)
+        XCTAssertEqual(chinda?.translates(TranslationDirection(source: .chinese, target: .english)), false)
+        XCTAssertNil(translator("mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"))
+        XCTAssertNil(translator("mlx-community/Qwen2.5-VL-7B-Instruct-4bit"))
+    }
+}

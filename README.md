@@ -35,15 +35,19 @@ Copy has Original (⌥⌘1), Translation (⌥⌘2), Bilingual line by line (⌥�
 
 Sessions are kept as text on this Mac (no audio) in Application Support/LiveTranslate/sessions, and can be deleted from the sidebar. System audio uses ScreenCaptureKit and asks for Screen Recording access the first time. Export to Notion sends the session's text to a Notion page you choose, with an integration token kept in the Keychain, and only when you press it.
 
+### Languages
+
+Thai, English, Chinese, Japanese, Korean, Vietnamese, Indonesian, French, German, and Spanish, in any direction. Pick the spoken language and the translation language in the header. Thai and English speech come with the pack; the others use a streaming model from Models → Speech → that language. Thai ⇄ English translates with ChindaMT; other pairs use a multilingual Qwen Instruct model from Models → Translation (marked "Many languages").
+
 ### Models from Hugging Face
 
-Models has one tab per task: Thai streaming, English streaming, Translation, Notes, plus the packs. Each tab lists only Hugging Face repos that a runtime in this app can load:
+Models has Speech (with a language picker), Translation, Notes, and Packs. Each lists only Hugging Face repos that a runtime in this app can load:
 
 | Task | Runtime | What qualifies |
 | --- | --- | --- |
-| Thai / English streaming | sherpa-onnx, CPU | Streaming transducer with `encoder*/decoder*/joiner*.onnx` and `tokens.txt`, and sherpa metadata in the encoder (read with a ranged request before listing) |
+| Speech, any language | sherpa-onnx, CPU | Streaming transducer with `encoder*/decoder*/joiner*.onnx` and `tokens.txt`, and sherpa metadata in the encoder (read with a ranged request before listing) |
 | English streaming | Core ML, Neural Engine | FluidAudio Nemotron streaming layout (`nemotron_coreml_1120ms/`) |
-| Translation, Notes | MLX, GPU | `config.json`, safetensors, tokenizer, an architecture the bundled mlx-lm has; ChindaMT / typhoon-translate for translation, Typhoon instruct for notes |
+| Translation, Notes | MLX, GPU | `config.json`, safetensors, tokenizer, an architecture the bundled mlx-lm has; ChindaMT / typhoon-translate for Thai ⇄ English, Qwen2.5 / Qwen3-2507 Instruct for other pairs, Typhoon or Qwen instruct for notes |
 
 Downloads resume, check the Hub's sha256, install atomically, and are opened once in a child process before they can be selected. Nothing downloads while Listen is on. For English, the Neural Engine build uses about 0.02 of a CPU core against 0.3 for the ONNX graph.
 
