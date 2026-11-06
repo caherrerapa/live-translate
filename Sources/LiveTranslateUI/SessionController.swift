@@ -21,6 +21,8 @@ final class SessionController: ObservableObject {
     /// something on screen changed, so unchanged hypotheses do not re-render the window.
     private(set) var engine: SessionEngine
     @Published var showModels = false
+    /// The "Connect to Claude" sheet.
+    @Published var claudeSetupPresented = false
     @Published var renaming = false
     @Published var renameText = ""
     @Published var exportPresented = false

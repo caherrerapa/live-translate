@@ -91,6 +91,9 @@ struct MacSessionView: View {
                 .accessibilityAddTraits(.isModal)
             }
         }
+        .sheet(isPresented: $controller.claudeSetupPresented) {
+            ClaudeSetupSheet()
+        }
         .alert("Rename speaker", isPresented: $controller.renaming) {
             TextField("Name", text: $controller.renameText)
             Button("Save") { controller.renameCurrent(to: controller.renameText) }

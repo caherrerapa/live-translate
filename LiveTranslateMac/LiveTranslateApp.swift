@@ -51,6 +51,8 @@ struct SessionCommands: Commands {
             }
             Button("Copy as Markdown") { controller.copyMarkdown() }
                 .keyboardShortcut("c", modifiers: [.command, .option, .shift])
+            Divider()
+            Button("Connect to Claude…") { controller.claudeSetupPresented = true }
         }
         CommandGroup(after: .pasteboard) {
             Divider()

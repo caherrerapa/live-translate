@@ -8,7 +8,10 @@ enum LiveTranslateMain {
         // Writing to a helper that just died must fail with EPIPE, not kill the app.
         signal(SIGPIPE, SIG_IGN)
         let args = CommandLine.arguments
-        if args.contains("--decode") {
+        if args.contains("--mcp") {
+            // Claude launches this; stdout carries only the protocol.
+            MCPServer.run()
+        } else if args.contains("--decode") {
             SpeechCLI.main()
         } else if args.contains("--notes") {
             NotesCLI.main()
