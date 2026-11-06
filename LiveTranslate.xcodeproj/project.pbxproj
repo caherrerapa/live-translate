@@ -430,6 +430,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Live Translate listens on this iPhone and keeps the audio on this device.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Live Translate turns speech into text on this iPhone with Apple's on-device recognition.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -459,6 +460,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Live Translate listens on this iPhone and keeps the audio on this device.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Live Translate turns speech into text on this iPhone with Apple's on-device recognition.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (

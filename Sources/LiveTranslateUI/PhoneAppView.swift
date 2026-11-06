@@ -9,6 +9,8 @@ struct PhoneAppView: View {
     @ObservedObject var controller: SessionController
     @State private var path: [UUID] = []
     @State private var picking: PhoneLanguageSide?
+    /// Set when the chosen pair still needs Apple's translation model; the system then asks to download it.
+    @State private var translationSetup: TranslationSession.Configuration?
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -29,6 +31,22 @@ struct PhoneAppView: View {
         .sheet(item: $picking) { side in
             PhoneLanguagePicker(controller: controller, side: side)
         }
+        .translationTask(translationSetup) { session in
+            try? await session.prepareTranslation()
+        }
+        .task(id: controller.engine.direction) {
+            let direction = controller.engine.direction
+            let status = await LanguageAvailability().status(
+                from: Locale.Language(identifier: direction.source.code),
+                to: Locale.Language(identifier: direction.target.code)
+            )
+            translationSetup = status == .supported
+                ? TranslationSession.Configuration(
+                    source: Locale.Language(identifier: direction.source.code),
+                    target: Locale.Language(identifier: direction.target.code)
+                )
+                : nil
+        }
         #if DEBUG
         .task {
             // LT_PHONE_SCREEN opens one design screen over the demo content, for simulator screenshots.
@@ -39,6 +57,8 @@ struct PhoneAppView: View {
                 controller.listenOrStop()
             case "summary", "copy", "transcript":
                 stop()
+            case "listen":
+                start()
             case "language":
                 controller.listenOrStop()
                 try? await Task.sleep(nanoseconds: 1_000_000_000)

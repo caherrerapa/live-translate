@@ -43,6 +43,14 @@ struct PhoneRoot: View {
         )
         .task {
             #if DEBUG
+            if ProcessInfo.processInfo.environment["LT_IOS_PROBE"] != nil {
+                let report = await AppleEngines.probe()
+                print("PROBE\n" + report)
+                if let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                    try? report.write(to: documents.appendingPathComponent("apple-probe.txt"), atomically: true, encoding: .utf8)
+                }
+                return
+            }
             // LT_DEMO=1 fills the screen with the design's content, for simulator screenshots.
             if ProcessInfo.processInfo.environment["LT_DEMO"] != nil {
                 try? await Task.sleep(nanoseconds: 1_500_000_000)

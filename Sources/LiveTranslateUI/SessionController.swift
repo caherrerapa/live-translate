@@ -53,13 +53,7 @@ final class SessionController: ObservableObject {
     var automationFeed: URL?
     #endif
 
-    var isTranslating: Bool {
-        #if os(macOS)
-        translationRunning
-        #else
-        false
-        #endif
-    }
+    var isTranslating: Bool { translationRunning }
     let catalog: ModelCatalog
     let packID: String
     let platform: String
@@ -102,9 +96,12 @@ final class SessionController: ObservableObject {
     #if os(macOS)
     private let notesClient = TyphoonNotesClient()
     private var translator: ChindaTranslator?
-    private var translationRunning = false
     private var terminationObserver: NSObjectProtocol?
+    #else
+    /// The iPhone's Apple Translation session, kept for the current direction.
+    private var appleTranslator: AnyObject?
     #endif
+    private var translationRunning = false
 
     init(catalog: ModelCatalog, packID: String, platform: String, storage: URL) {
         self.catalog = catalog
@@ -120,9 +117,19 @@ final class SessionController: ObservableObject {
         // The notes model takes seconds per pass. It runs on `notesQueue`, never inline on the main thread.
         notes.defersModel = true
         #else
-        let notes = NotesReducer { input in
-            NotesProductionPass.produce(input: input) { _ in
-                NotesDraft(title: "", titleTurnID: "", summary: [], decisions: [], actions: [], openQuestions: [])
+        var notes: NotesReducer
+        if #available(iOS 26.0, *) {
+            // Apple Intelligence writes the summary on the iPhone, off the main thread like the Mac's model.
+            let client = AppleNotesClient()
+            notes = NotesReducer { input in
+                NotesProductionPass.produce(input: input) { client.draft(for: $0) }
+            }
+            notes.defersModel = true
+        } else {
+            notes = NotesReducer { input in
+                NotesProductionPass.produce(input: input) { _ in
+                    NotesDraft(title: "", titleTurnID: "", summary: [], decisions: [], actions: [], openQuestions: [])
+                }
             }
         }
         #endif
@@ -192,10 +199,22 @@ final class SessionController: ObservableObject {
         // A downloaded speech model is enough to listen; the session engine gates on this flag.
         // Listen needs a speech model for the spoken language: the pack's (Thai, English) or a downloaded one.
         let source = engine.direction.source
+        #if os(iOS)
+        // Apple's recognizer covers every language the app offers; the system fetches its model.
+        let speechReady = AppleEngines.available || hasSelectedSpeech
+        #else
         let speechReady = (installed && source.inPack) || hasSelectedSpeech
+        #endif
         mutate { $0.packInstalled = speechReady }
+        #if os(iOS)
+        let needsNewerSystem = !AppleEngines.available
+        #else
+        let needsNewerSystem = false
+        #endif
         if speechReady {
             statusLine = ""
+        } else if needsNewerSystem {
+            statusLine = "Live translation on iPhone needs iOS 26."
         } else if installed || !source.inPack {
             statusLine = "No \(source.title) speech model yet. Open Manage languages and download one from \(source.title) streaming."
         } else {
@@ -286,12 +305,10 @@ final class SessionController: ObservableObject {
         persistCurrent()
         library.listening = false
         Task { await installer.setListening(false) }
-        #if os(macOS)
         if let request = engine.pendingTranslation, !translationRunning {
             translationRunning = true
             runTranslation(request)
         }
-        #endif
     }
 
     func openSettings() {
@@ -402,6 +419,11 @@ final class SessionController: ObservableObject {
             )
         }
         #else
+        if #available(iOS 26.0, *) {
+            return SpeechPlan(key: "apple:\(language.rawValue)", title: "Apple Speech \(language.title)") {
+                AppleSpeechDecoder(language: language)
+            }
+        }
         return nil
         #endif
     }
@@ -564,12 +586,10 @@ final class SessionController: ObservableObject {
             engine.pushHypothesis(update.step.text, speakerRaw: update.speakerRaw, at: Date(), endpoint: update.step.endpoint)
             request = engine.pendingTranslation
         }, quietUnlessVisible: true)
-        #if os(macOS)
         if let request, !translationRunning {
             translationRunning = true
             runTranslation(request)
         }
-        #endif
     }
 
     // MARK: Session actions
@@ -1169,6 +1189,45 @@ final class SessionController: ObservableObject {
         translator?.stop()
         translator = nil
         notesClient.terminateNow()
+    }
+    #else
+    /// Translates one turn with Apple Translation, then the next request the engine has queued.
+    private func runTranslation(_ request: TranslationRequest) {
+        guard #available(iOS 26.0, *) else {
+            translationRunning = false
+            mutate { _ = $0.deliverTranslation(generation: request.generation, text: "", at: Date()) }
+            return
+        }
+        let translator: AppleTranslator
+        if let existing = appleTranslator as? AppleTranslator, existing.direction == request.direction {
+            translator = existing
+        } else {
+            translator = AppleTranslator(direction: request.direction)
+            appleTranslator = translator
+            translatorStatus = .ready("Apple Translation · on device")
+        }
+        let session = current.id
+        Task { [weak self] in
+            let text = await translator.translate(request.source)
+            guard let self else { return }
+            guard session == self.current.id else {
+                self.translationRunning = false
+                return
+            }
+            var followUp: TranslationRequest?
+            self.mutate { engine in
+                if engine.deliverTranslation(generation: request.generation, text: text, at: Date()) {
+                    followUp = engine.pendingTranslation
+                } else {
+                    followUp = engine.retryTranslation(at: Date())
+                }
+            }
+            if let followUp {
+                self.runTranslation(followUp)
+            } else {
+                self.translationRunning = false
+            }
+        }
     }
     #endif
 
