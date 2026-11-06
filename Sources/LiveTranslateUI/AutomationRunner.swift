@@ -221,6 +221,24 @@ enum AutomationRunner {
             NSApp.terminate(nil)
             return
         }
+        if ProcessInfo.processInfo.environment["LT_AUTOMATION_ONLY"] == "quit" {
+            // Quit in the middle of speech: nothing queued for the speech graphs may run during exit.
+            controller.setDirection(.englishToThai)
+            _ = await waitUntil(120) { if case .ready = controller.speechStatus { return true }; return false }
+            controller.automationFeed = english
+            controller.listenOrStop()
+            await sleep(Double.random(in: 1.5...4))
+            check("Listening when quit", controller.engine.listening, "")
+            check("Done", true, folder.path)
+            NSApp.terminate(nil)
+            return
+        }
+        if ProcessInfo.processInfo.environment["LT_AUTOMATION_ONLY"] == "long" {
+            await longMeetingCheck(controller)
+            check("Done", true, folder.path)
+            NSApp.terminate(nil)
+            return
+        }
         if ProcessInfo.processInfo.environment["LT_AUTOMATION_ONLY"] == "recover" {
             await translatorRecoveryCheck(controller, thai: thai)
             check("Done", true, folder.path)
@@ -365,6 +383,60 @@ enum AutomationRunner {
         let heard = ["meeting", "notes", "translation", "ship"].filter { source.lowercased().contains($0) }
         check("\(label): speech recognized from real sound", heard.count >= 2, source)
         check("\(label): translated to Thai", translation.unicodeScalars.contains { (0x0E00...0x0E7F).contains($0.value) }, translation)
+    }
+
+    /// A two-hour meeting's transcript on screen while words keep arriving: the window must
+    /// stay as responsive at turn 1,500 as at turn 1.
+    private static func longMeetingCheck(_ controller: SessionController) async {
+        let count = Int(ProcessInfo.processInfo.environment["LT_LONG_TURNS"] ?? "1500") ?? 1500
+        // Real listening holds this activity (startListening); the demo session does not start capture,
+        // so the check takes it itself. Without it macOS throttles a background app's timers and events.
+        let activity = ProcessInfo.environment_noNap ? nil : ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .latencyCritical], reason: "Long meeting check")
+        defer { if let activity { ProcessInfo.processInfo.endActivity(activity) } }
+        let loadStart = Date()
+        controller.loadLongDemo(turns: count)
+        await sleep(3)
+        check("Long meeting: \(count) turns load", controller.engine.turns.count >= count,
+              String(format: "%d turns in %.1f s", controller.engine.turns.count, Date().timeIntervalSince(loadStart)))
+        let watchdog = MainThreadWatchdog()
+        watchdog.start()
+        let input = InputLatencyProbe()
+        input.start()
+        let words = "and then we will also need to confirm the training dates with every store manager before the opening".split(separator: " ")
+        var text = ""
+        for (index, word) in words.enumerated() {
+            text += (index == 0 ? "" : " ") + word
+            controller.pushDemoPartial(text)
+            await sleep(0.1)
+        }
+        for _ in 0..<40 {
+            controller.pushDemoPartial(text + " " + String(repeating: ".", count: Int.random(in: 1...3)))
+            await sleep(0.1)
+        }
+        // New turns keep starting in a real meeting: each one appends a row and scrolls to it.
+        let started = Date()
+        var marks: [String] = []
+        for round in 0..<6 {
+            controller.pushDemoPartial(text, endpoint: true)
+            marks.append(String(format: "turn %d at %.1f s", round, Date().timeIntervalSince(started)))
+            await sleep(0.5)
+            for (index, word) in words.prefix(8).enumerated() {
+                controller.pushDemoPartial(words.prefix(index + 1).joined(separator: " ") + " \(round)")
+                _ = word
+                await sleep(0.1)
+            }
+        }
+        print("AUTOMATION long marks " + marks.joined(separator: "; ")); fflush(stdout)
+        let stallTimes = watchdog.stalls.map { String(format: "%.0f ms at +%.1f s", $0.1 * 1000, $0.0.timeIntervalSince(started)) }
+        print("AUTOMATION long stalls " + stallTimes.joined(separator: "; ")); fflush(stdout)
+        let worst = watchdog.stop()
+        let inputWorst = input.stop()
+        snapshot("long-meeting")
+        check("Long meeting: input handled within 100 ms while words arrive", inputWorst < 0.1,
+              String(format: "worst input delay %.0f ms over %d events; main-queue stalls %@", inputWorst * 1000, input.count,
+                     watchdog.stalls.map { String(format: "%.0f", $0.1 * 1000) }.joined(separator: ",")))
+        check("Long meeting: main thread never stalls over 150 ms", worst < 0.15, String(format: "worst %.0f ms", worst * 1000))
     }
 
     /// Kills this app's own translator process mid-session, the way a crash or the
@@ -799,6 +871,11 @@ final class InputLatencyProbe: @unchecked Sendable {
         if let monitor { NSEvent.removeMonitor(monitor) }
         return worst
     }
+}
+
+private extension ProcessInfo {
+    /// LT_LONG_NO_ACTIVITY=1 runs the long-meeting check without the listening activity, for comparison.
+    static var environment_noNap: Bool { processInfo.environment["LT_LONG_NO_ACTIVITY"] != nil }
 }
 
 /// Lets the runner read the controller's status without exposing more API.

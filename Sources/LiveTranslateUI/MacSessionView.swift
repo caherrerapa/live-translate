@@ -557,9 +557,10 @@ private struct TranscriptMain: View {
                     ScrollViewReader { proxy in
                         ScrollView {
                             let rows = turns
-                            VStack(spacing: 6) {
-                                // Turns sit at the bottom, newest last, like the design.
-                                Spacer(minLength: 0)
+                            let viewingPast = controller.isViewingPast
+                            // Lazy: only the rows on screen are built, however long the meeting runs.
+                            // Turns sit at the bottom, newest last, like the design (the frame below).
+                            LazyVStack(spacing: 6) {
                                 if rows.isEmpty {
                                     EmptyTranscript(controller: controller, sourceName: direction.source.title)
                                         .frame(maxWidth: .infinity)
@@ -571,6 +572,7 @@ private struct TranscriptMain: View {
                                         direction: direction,
                                         layout: layout,
                                         focused: controller.engine.focusedTurnID == turn.id,
+                                        viewingPast: viewingPast,
                                         controller: controller
                                     )
                                     .id(turn.id)
@@ -667,7 +669,10 @@ struct TurnRow: View {
     let direction: TranslationDirection
     let layout: TranscriptLayout
     let focused: Bool
-    @ObservedObject var controller: SessionController
+    let viewingPast: Bool
+    /// For actions only. Not observed: a row redraws when its own turn changes, so a two-hour
+    /// transcript does not re-render every row for each word of the live turn.
+    let controller: SessionController
     @State private var hovering = false
 
     private var active: Bool { hovering || focused }
@@ -715,7 +720,7 @@ struct TurnRow: View {
             Button("Copy original") { copyOriginal() }
             Button("Copy translation") { copyTranslation() }
             Button("Copy both") { controller.copy(text: turn.sourceText + "\n" + turn.translationText, label: "Turn copied") }
-            if !controller.isViewingPast {
+            if !viewingPast {
                 Divider()
                 Button("Highlight") {
                     controller.focus(turn.id)

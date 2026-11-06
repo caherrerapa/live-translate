@@ -33,7 +33,8 @@ final class TyphoonNotesClient: @unchecked Sendable {
         defer { lock.unlock() }
         guard startIfNeeded() else { return empty }
         let prompt = NotesProductionPass.prompt(for: noteInput)
-        let body: [String: Any] = ["id": 1, "prompt": prompt, "max_tokens": 480]
+        let budget = Self.replyBudget(for: noteInput.note)
+        let body: [String: Any] = ["id": 1, "prompt": prompt, "max_tokens": budget]
         guard let data = try? JSONSerialization.data(withJSONObject: body) else { return empty }
         var line = data
         line.append(0x0A)
@@ -43,12 +44,22 @@ final class TyphoonNotesClient: @unchecked Sendable {
             return empty
         }
         // A hung model would hold `lock` forever and starve every later pass.
-        guard let reply = readLine(timeout: 180),
+        // At ~10 tokens a second on a busy GPU, the largest reply needs a few minutes.
+        guard let reply = readLine(timeout: max(180, Double(budget) / 8)),
               let object = try? JSONSerialization.jsonObject(with: Data(reply.utf8)) as? [String: Any],
               let text = object["text"] as? String else {
             return empty
         }
         return NotesProductionPass.draft(parsing: text, fallbackTurnID: noteInput.turns.last?.id ?? "")
+    }
+
+    /// Each pass repeats the whole note and adds to it, so a long meeting's reply outgrows a fixed
+    /// budget and would be cut off mid-JSON, freezing the note. The budget follows the note's size:
+    /// about one token per 2.5 characters (Thai runs denser than English), plus room for new items.
+    static func replyBudget(for note: MeetingNote) -> Int {
+        let items = [note.title] + note.summary + note.decisions + note.actions + note.openQuestions
+        let characters = items.reduce(0) { $0 + $1.text.count + $1.turnID.count + 24 }
+        return min(2048, max(480, Int(Double(characters) / 2.5) + 320))
     }
 
     /// Ends the process at once. Called on quit: a pass holding `lock` reads EOF and returns.

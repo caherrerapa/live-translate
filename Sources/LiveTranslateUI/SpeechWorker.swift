@@ -28,6 +28,8 @@ final class SpeechWorker: @unchecked Sendable {
     private var active: LiveSpeechDecoder?
     private var labeler: LSEENDSpeakerLabeler?
     private var running = false
+    /// Set when the app quits: no decoder call may start once process teardown can begin.
+    private var exiting = false
     private var lastText = ""
     private var lastRaw: Int?
     private var lastEmit: TimeInterval = 0
@@ -45,6 +47,7 @@ final class SpeechWorker: @unchecked Sendable {
         completion: @escaping @MainActor (LiveSpeechDecoder?) -> Void
     ) {
         queue.async {
+            guard !self.exiting else { return }
             var decoder = self.resident[key]
             if decoder == nil, let made = make() {
                 decoder = made
@@ -78,6 +81,7 @@ final class SpeechWorker: @unchecked Sendable {
 
     func start(emit: @escaping (Update) -> Void) {
         queue.async {
+            guard !self.exiting else { return }
             self.active?.reset()
             // Speaker numbering and the diarizer's history start fresh with each session.
             self.labeler?.reset()
@@ -93,7 +97,7 @@ final class SpeechWorker: @unchecked Sendable {
     /// recognizer's look-ahead releases the last words, and reports on the main thread.
     func drain(completion: @escaping @MainActor () -> Void) {
         queue.async {
-            if self.running, let decoder = self.active, let emit = self.emit {
+            if self.running, !self.exiting, let decoder = self.active, let emit = self.emit {
                 let silence = [Float](repeating: 0, count: 320)
                 for _ in 0..<60 {
                     let step = decoder.decode(silence)
@@ -111,8 +115,23 @@ final class SpeechWorker: @unchecked Sendable {
         queue.async {
             self.running = false
             self.emit = nil
+            guard !self.exiting else { return }
             self.active?.reset()
         }
+    }
+
+    /// For quitting. Lets the decode in flight finish (up to a second), then refuses all decoder
+    /// work: a reset or decode queued behind exit ran while the process was tearing down ONNX
+    /// Runtime and aborted it (std::terminate in CreateTensor and in ReleaseEnv).
+    func quiesceForExit() {
+        let done = DispatchSemaphore(value: 0)
+        queue.async {
+            self.exiting = true
+            self.running = false
+            self.emit = nil
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + 1)
     }
 
     /// Called from the audio tap thread.
@@ -141,7 +160,7 @@ final class SpeechWorker: @unchecked Sendable {
             self.pending.removeAll(keepingCapacity: true)
             self.drainScheduled = false
             self.pendingLock.unlock()
-            guard !samples.isEmpty, self.running, let decoder = self.active, let emit = self.emit else { return }
+            guard !samples.isEmpty, self.running, !self.exiting, let decoder = self.active, let emit = self.emit else { return }
             let step = decoder.decode(samples)
             let raw = self.labeler?.speakerRaw(pcm: samples)
             let now = ProcessInfo.processInfo.systemUptime

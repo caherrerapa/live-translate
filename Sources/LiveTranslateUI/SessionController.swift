@@ -1200,6 +1200,9 @@ final class SessionController: ObservableObject {
     }
 
     private func shutdown() {
+        // First, so nothing queued behind quit touches the speech graphs during teardown.
+        capture.stop()
+        worker.quiesceForExit()
         if engine.listening { stopListening() } else { persistCurrent() }
         capture.stop()
         worker.stop()
@@ -1392,6 +1395,34 @@ extension SessionController {
     }
 
     /// The design's "Mac app — live session" content, for screenshots and previews.
+    /// A meeting `count` turns long, then a live turn, for the long-meeting check.
+    func loadLongDemo(turns count: Int) {
+        let start = Date().addingTimeInterval(-Double(count) * 6)
+        mutate { engine in
+            engine.clear()
+            engine.direction = .englishToThai
+            engine.packInstalled = true
+            engine.setListening(true)
+            for index in 0..<count {
+                let at = start.addingTimeInterval(Double(index) * 6)
+                engine.pushHypothesis("Turn \(index): we went through the rollout schedule, the kiosks and the permit for the third store.", speakerRaw: index % 3, at: at, endpoint: true)
+                while let request = engine.pendingTranslation {
+                    engine.deliverTranslation(generation: request.generation, text: "เทิร์น \(index): เราทบทวนกำหนดการเปิดตัว ตู้คีออสก์ และใบอนุญาตของสาขาที่สาม", at: at)
+                }
+            }
+        }
+    }
+
+    /// One live partial, the way the speech worker delivers it.
+    func pushDemoPartial(_ text: String, endpoint: Bool = false) {
+        mutate({ engine in
+            engine.pushHypothesis(text, speakerRaw: 0, at: Date(), endpoint: endpoint)
+            if let request = engine.pendingTranslation {
+                engine.deliverTranslation(generation: request.generation, text: "", at: Date())
+            }
+        }, quietUnlessVisible: true)
+    }
+
     func loadDemo() {
         var parts = Calendar.current.dateComponents([.year, .month, .day], from: Date())
         parts.hour = 10
