@@ -372,6 +372,36 @@ enum SessionCLI {
         let updates = DispatchQueue(label: "cli.updates")
         var pending: [SpeechWorker.Update] = []
         worker.start { update in updates.sync { pending.append(update) } }
+        if args.contains("--system-audio") {
+            // Real ScreenCaptureKit capture: the Mac plays the recording and the session hears its output.
+            let capture = SystemAudioCapture()
+            var failure: Error?
+            var peak: Float = 0
+            do {
+                try capture.start(onSamples: { samples in
+                    for sample in samples { peak = max(peak, abs(sample)) }
+                    worker.push(samples)
+                }, onError: { failure = $0 })
+            } catch {
+                failure = error
+            }
+            Thread.sleep(forTimeInterval: 2)
+            let player = Process()
+            player.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
+            player.arguments = [audio]
+            try? player.run()
+            while player.isRunning {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+                let batch = updates.sync { () -> [SpeechWorker.Update] in defer { pending.removeAll() }; return pending }
+                for update in batch {
+                    engine.pushHypothesis(update.step.text, speakerRaw: nil, at: Date(), endpoint: update.step.endpoint)
+                }
+                drain(&engine, translator)
+            }
+            Thread.sleep(forTimeInterval: 2)
+            capture.stop()
+            print("system_audio_error \(failure.map { String(describing: $0) } ?? "none") peak \(String(format: "%.3f", peak))")
+        }
         // Feed the recording at real-time speed in 20 ms buffers, plus 3 s of silence for the endpoint.
         let tail = [Float](repeating: 0, count: 48_000)
         let all = samples + tail
@@ -380,7 +410,7 @@ enum SessionCLI {
         var offset = 0
         var cpuStart = rusage()
         getrusage(RUSAGE_SELF, &cpuStart)
-        while offset < all.count {
+        while offset < all.count && !args.contains("--system-audio") {
             let end = min(offset + hop, all.count)
             worker.push(Array(all[offset..<end]))
             offset = end
