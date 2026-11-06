@@ -68,6 +68,16 @@ final class SessionController: ObservableObject {
     let installer: PackInstaller
     let library: ModelLibrary
     private var capture: AudioCapturing = MicrophoneCapture()
+    #if DEBUG
+    /// For checks: acts as if the input device changed mid-session. Returns false if not on the microphone.
+    func simulateInputDeviceChange() -> Bool {
+        guard let microphone = capture as? MicrophoneCapture else { return false }
+        microphone.simulateConfigurationChange()
+        return true
+    }
+
+    var microphoneRunning: Bool { (capture as? MicrophoneCapture)?.isRunning ?? false }
+    #endif
     private let store: SessionStore
     private var pausedTotal: TimeInterval = 0
     private var pauseStarted: Date?

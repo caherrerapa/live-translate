@@ -78,6 +78,18 @@ final class MicrophoneCapture: AudioCapturing {
         onError = nil
     }
 
+    #if DEBUG
+    /// Posts the notification AVAudioEngine sends when the input device changes, after
+    /// stopping the engine the way the system does, so a check can exercise the restart.
+    func simulateConfigurationChange() {
+        guard started else { return }
+        engine.stop()
+        NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: engine)
+    }
+
+    var isRunning: Bool { engine.isRunning }
+    #endif
+
     private func restartAfterConfigurationChange() {
         guard started else { return }
         engine.inputNode.removeTap(onBus: 0)
