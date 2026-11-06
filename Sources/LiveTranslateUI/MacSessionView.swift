@@ -2,10 +2,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-private let sessionPalette: [Color] = [
-    Color(red: 0.93, green: 0.39, blue: 0.20), Color(red: 0.13, green: 0.62, blue: 0.55),
-    .blue, .purple, .pink, .indigo, .orange, .brown,
-]
+private let sessionPalette: [Color] = Theme.speakers
 
 /// The Mac window: session history, the live transcript, and the summary inspector.
 struct MacSessionView: View {
@@ -19,6 +16,7 @@ struct MacSessionView: View {
         NavigationSplitView(columnVisibility: $columns) {
             SessionSidebar(controller: controller, columns: $columns)
                 .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 320)
+                .background(Theme.sidebar)
         } detail: {
             VStack(spacing: 0) {
                 header
@@ -33,8 +31,12 @@ struct MacSessionView: View {
                     .inspectorColumnWidth(min: 280, ideal: 320, max: 420)
             }
         }
+        .tint(Theme.accent)
         .overlay(alignment: .bottom) { toast }
         .animation(.easeOut(duration: 0.2), value: controller.toast)
+        #if DEBUG
+        .task { AutomationRunner.startIfRequested(controller) }
+        #endif
         .sheet(isPresented: $controller.showModels) {
             ModelScreen(controller: controller, library: controller.library)
         }
@@ -101,14 +103,23 @@ struct MacSessionView: View {
                 Divider()
                 Button("Export to Notion…") { controller.exportToNotion() }
             } label: {
-                Label("Export", systemImage: "square.and.arrow.up")
+                HStack(spacing: 5) {
+                    Image(systemName: "square.and.arrow.up")
+                    Text("Export")
+                }
+                .outlined()
             }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
             .fixedSize()
             Button {
                 withAnimation { showInspector.toggle() }
             } label: {
                 Image(systemName: "sidebar.right")
-                    .foregroundStyle(showInspector ? Color.accentColor : .secondary)
+                    .foregroundStyle(showInspector ? Theme.accent : .secondary)
+                    .padding(6)
+                    .background(showInspector ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 7))
             }
             .buttonStyle(.borderless)
             .help(showInspector ? "Hide summary" : "Show summary")
@@ -167,8 +178,16 @@ struct CopyMenu: View {
                 Text("Hover any line in the transcript to copy just that line — original, translation or both.")
             }
         } label: {
-            Label("Copy", systemImage: "doc.on.doc")
+            HStack(spacing: 5) {
+                Image(systemName: "doc.on.doc")
+                Text("Copy")
+                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            }
+            .outlined()
         }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
         .fixedSize()
     }
 }
@@ -215,7 +234,8 @@ private struct LanguagePair: View {
             }
             Button(action: controller.swapDirection) {
                 Image(systemName: "arrow.left.arrow.right")
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(Theme.accent)
+                    .padding(.horizontal, 4)
             }
             .buttonStyle(.borderless)
             .help("Swap languages")
@@ -232,9 +252,15 @@ private struct LanguagePair: View {
             Button("English") { pick(.english) }
             Button("Thai") { pick(.thai) }
         } label: {
-            Text(language == .thai ? "Thai" : "English")
-                .frame(minWidth: 64)
+            HStack(spacing: 6) {
+                Text(language == .thai ? "Thai" : "English")
+                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            }
+            .outlined()
         }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
         .fixedSize()
     }
 }
@@ -265,27 +291,36 @@ struct SessionSidebar: View {
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
-                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+                .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 8))
                 Button(action: controller.newSession) {
                     Image(systemName: "plus")
                         .font(.body.weight(.semibold))
-                        .frame(width: 26, height: 26)
+                        .foregroundStyle(.white)
+                        .frame(width: 30, height: 30)
+                        .background(Theme.accent, in: RoundedRectangle(cornerRadius: 8))
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.plain)
                 .keyboardShortcut("n", modifiers: .command)
                 .help("New session (⌘N)")
             }
             .padding(.horizontal, 10)
             .padding(.bottom, 8)
 
-            List(selection: selection) {
+            List {
                 ForEach(SessionGroup.allCases, id: \.self) { group in
                     let members = rows.filter { SessionGroup.of($0.started) == group }
                     if !members.isEmpty {
                         Section(group.rawValue.uppercased()) {
                             ForEach(members) { record in
-                                row(record)
-                                    .tag(record.id)
+                                let chosen = (controller.viewingID ?? controller.current.id) == record.id
+                                row(record, selected: chosen)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture { controller.open(record.id) }
+                                    .listRowBackground(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .fill(chosen ? Theme.selection : .clear)
+                                            .padding(.horizontal, 8)
+                                    )
                                     .contextMenu {
                                         Button("Delete", role: .destructive) { controller.deleteSession(record.id) }
                                     }
@@ -295,6 +330,7 @@ struct SessionSidebar: View {
                 }
             }
             .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
             .overlay {
                 if rows.isEmpty {
                     Text(query.isEmpty ? "Sessions you record appear here." : "No matching sessions.")
@@ -316,15 +352,16 @@ struct SessionSidebar: View {
         )
     }
 
-    private func row(_ record: SessionRecord) -> some View {
+    private func row(_ record: SessionRecord, selected: Bool) -> some View {
         let live = record.id == controller.current.id && controller.engine.listening
         return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 5) {
                 if live {
-                    Circle().fill(.red).frame(width: 7, height: 7)
+                    Circle().fill(Theme.live).frame(width: 7, height: 7)
                 }
                 Text(verbatim: record.displayTitle)
-                    .fontWeight(.medium)
+                    .fontWeight(selected ? .semibold : .regular)
+                    .foregroundStyle(selected ? Theme.accent : .primary)
                     .lineLimit(1)
             }
             Text(live ? "\(record.directionShort) · Live" : "\(record.directionShort) · \(SessionRecord.durationText(record.duration))")
@@ -342,7 +379,7 @@ private struct OfflineCard: View {
         VStack(alignment: .leading, spacing: 4) {
             Label("On-device · works offline", systemImage: "cpu")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(Theme.accent)
             Text(modelLine)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -353,8 +390,8 @@ private struct OfflineCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08)))
+        .background(.background, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.hairline))
     }
 
     private var modelLine: String {
@@ -477,7 +514,7 @@ struct TranscriptPane: View {
                     .font(.caption)
             }
             .buttonStyle(.borderless)
-            .foregroundStyle(Color.accentColor)
+            .foregroundStyle(Theme.accent)
             .disabled(turns.isEmpty)
         }
         .padding(.horizontal, 30)
@@ -586,7 +623,7 @@ struct TurnRow: View {
         .padding(.vertical, 12)
         .background(
             RoundedRectangle(cornerRadius: 10)
-                .fill(selected ? Color.accentColor.opacity(0.08) : (hovering ? Color.primary.opacity(0.035) : .clear))
+                .fill(selected ? Theme.selection.opacity(0.7) : (hovering ? Theme.hover : .clear))
         )
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
@@ -610,7 +647,7 @@ struct TurnRow: View {
     private var sourceText: some View {
         (Text(verbatim: turn.source)
             + Text(verbatim: turn.sourceTail).foregroundStyle(.secondary)
-            + Text(verbatim: turn.live ? "▏" : "").foregroundStyle(Color.accentColor))
+            + Text(verbatim: turn.live ? "▏" : "").foregroundStyle(Theme.accent))
             .lineSpacing(3)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
@@ -641,11 +678,11 @@ struct TurnRow: View {
                 .font(.caption)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
-                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.12)))
+                .background(.background, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.hairline))
         }
         .buttonStyle(.plain)
-        .foregroundStyle(Color.accentColor)
+        .foregroundStyle(Theme.accent)
     }
 }
 
@@ -656,10 +693,10 @@ private struct LiveBadgeStyle: LabelStyle {
             configuration.title
         }
         .font(.caption2.weight(.semibold))
-        .foregroundStyle(.red)
+        .foregroundStyle(Theme.live)
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
-        .background(Color.red.opacity(0.1), in: Capsule())
+        .background(Theme.live.opacity(0.1), in: Capsule())
     }
 }
 
@@ -686,7 +723,9 @@ struct BottomBar: View {
                 if controller.engine.listening {
                     Button(action: controller.pauseOrResume) {
                         Label(controller.paused ? "Resume" : "Pause", systemImage: controller.paused ? "play.fill" : "pause.fill")
+                            .outlined()
                     }
+                    .buttonStyle(.plain)
                     .keyboardShortcut("p", modifiers: [.command, .shift])
                     .controlSize(.large)
                 }
@@ -707,8 +746,16 @@ struct BottomBar: View {
                 }
             }
         } label: {
-            Label(controller.audioSource.title, systemImage: controller.audioSource.systemImage)
+            HStack(spacing: 6) {
+                Image(systemName: controller.audioSource.systemImage)
+                Text(controller.audioSource.title)
+                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            }
+            .outlined()
         }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
         .fixedSize()
         .help("Microphone hears the room. System audio hears what this Mac plays, such as a call.")
     }
@@ -717,7 +764,7 @@ struct BottomBar: View {
     private var status: some View {
         if controller.engine.listening {
             HStack(spacing: 8) {
-                Circle().fill(controller.paused ? Color.orange : .red).frame(width: 8, height: 8)
+                Circle().fill(controller.paused ? Color.orange : Theme.live).frame(width: 8, height: 8)
                 Text(controller.paused ? "Paused" : "Listening").fontWeight(.semibold)
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     Text(StatusStrip.elapsed(controller.elapsed(at: context.date)))
@@ -756,7 +803,7 @@ struct BottomBar: View {
                 .frame(minWidth: 70)
         }
         .buttonStyle(.borderedProminent)
-        .tint(controller.engine.listening ? .red : .accentColor)
+        .tint(controller.engine.listening ? Theme.live : Theme.accent)
         .controlSize(.large)
         .keyboardShortcut(.return, modifiers: .command)
         .disabled(!controller.engine.listening && !controller.isPreparing && !(controller.engine.listenEnabled && controller.engine.packInstalled))
@@ -785,7 +832,7 @@ private struct Waveform: View {
         HStack(alignment: .center, spacing: 2) {
             ForEach(Array(levels.enumerated()), id: \.offset) { _, level in
                 Capsule()
-                    .fill(Color.accentColor.opacity(0.35 + Double(level) * 0.65))
+                    .fill(Theme.accent.opacity(0.3 + Double(level) * 0.7))
                     .frame(width: 3, height: max(3, CGFloat(level) * 26))
             }
         }
@@ -829,6 +876,7 @@ struct SummaryInspector: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
                 .disabled(controller.exporting)
             }
             .controlSize(.large)
@@ -854,7 +902,7 @@ struct SummaryInspector: View {
                     Image(systemName: "doc.on.doc")
                 }
                 .buttonStyle(.borderless)
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(Theme.accent)
                 .help("Copy summary")
             }
             HStack(spacing: 5) {
@@ -897,9 +945,17 @@ struct SummaryInspector: View {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("•")
                         (Text(verbatim: controller.noteText(item.text))
-                            + (item.tentative ? Text("  New").font(.caption2.weight(.semibold)).foregroundStyle(Color.accentColor) : Text("")))
+                        )
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
+                        if item.tentative {
+                            Text("New")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(Theme.accent)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(Theme.selection, in: Capsule())
+                        }
                     }
                     .contextMenu {
                         if !controller.isViewingPast {
@@ -923,7 +979,7 @@ struct SummaryInspector: View {
                             controller.toggleAction(item.id)
                         } label: {
                             Image(systemName: done ? "checkmark.square.fill" : "square")
-                                .foregroundStyle(done ? Color.accentColor : .secondary)
+                                .foregroundStyle(done ? Theme.accent : .secondary)
                         }
                         .buttonStyle(.plain)
                         VStack(alignment: .leading, spacing: 2) {
@@ -959,7 +1015,7 @@ struct SummaryInspector: View {
                 }
             }
             .padding(8)
-            .background(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.12)))
+            .background(RoundedRectangle(cornerRadius: 8).stroke(Theme.hairline))
         }
     }
 

@@ -87,6 +87,24 @@ final class SpeechWorker: @unchecked Sendable {
         }
     }
 
+    /// Runs after every buffer already handed over, then feeds trailing silence so the
+    /// recognizer's look-ahead releases the last words, and reports on the main thread.
+    func drain(completion: @escaping @MainActor () -> Void) {
+        queue.async {
+            if self.running, let decoder = self.active, let emit = self.emit {
+                let silence = [Float](repeating: 0, count: 320)
+                for _ in 0..<60 {
+                    let step = decoder.decode(silence)
+                    if step.endpoint || step.text != self.lastText {
+                        self.lastText = step.endpoint ? "" : step.text
+                        emit(Update(step: step, speakerRaw: self.lastRaw))
+                    }
+                }
+            }
+            DispatchQueue.main.async { completion() }
+        }
+    }
+
     func stop() {
         queue.async {
             self.running = false

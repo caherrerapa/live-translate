@@ -101,23 +101,63 @@ actor PackInstaller {
         try? FileManager.default.createSymbolicLink(at: dest, withDestinationURL: source)
     }
 
+    /// Files already hashed, keyed by path, with the size and date they had then.
+    /// A 2.4 GB graph is hashed once, not on every direction change.
+    private var verified: [String: (size: Int, modified: Date, sha256: String)] = [:]
+    private var verifiedLoaded = false
+
+    /// The hash cache survives relaunch, so Listen is ready without re-reading gigabytes.
+    private var verifiedURL: URL { root.appendingPathComponent(".verified.json") }
+
+    private func loadVerified() {
+        guard !verifiedLoaded else { return }
+        verifiedLoaded = true
+        guard let data = try? Data(contentsOf: verifiedURL),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
+        for row in rows {
+            guard let path = row["path"] as? String, let size = row["size"] as? Int,
+                  let modified = row["modified"] as? Double, let sha = row["sha256"] as? String else { continue }
+            verified[path] = (size, Date(timeIntervalSince1970: modified), sha)
+        }
+    }
+
+    private func saveVerified() {
+        let rows = verified.map { ["path": $0.key, "size": $0.value.size, "modified": $0.value.modified.timeIntervalSince1970, "sha256": $0.value.sha256] as [String: Any] }
+        if let data = try? JSONSerialization.data(withJSONObject: rows) {
+            try? data.write(to: verifiedURL, options: .atomic)
+        }
+    }
+
     func isInstalled(packID: String, files: [PackFileSpec]) -> Bool {
         guard !files.isEmpty, files.allSatisfy(\.hasHash) else { return false }
+        loadVerified()
         for file in files {
             let url = fileURL(packID: packID, modelID: file.modelID, name: file.name)
             guard FileManager.default.fileExists(atPath: url.path) else { return false }
+            let target = url.resolvingSymlinksInPath()
+            let attributes = try? FileManager.default.attributesOfItem(atPath: target.path)
+            let size = (attributes?[.size] as? NSNumber)?.intValue ?? -1
+            let modified = attributes?[.modificationDate] as? Date ?? .distantPast
+            if let seen = verified[url.path], seen.size == size, seen.modified == modified,
+               seen.sha256 == file.sha256.lowercased() {
+                continue
+            }
             guard let digest = try? Hash.sha256(file: url), digest == file.sha256.lowercased() else {
                 if let values = try? url.resourceValues(forKeys: [.isSymbolicLinkKey]), values.isSymbolicLink == true {
                     try? FileManager.default.removeItem(at: url)
                 }
                 return false
             }
+            verified[url.path] = (size, modified, digest)
+            saveVerified()
         }
         return true
     }
 
     func delete(packID: String) throws {
         let directory = root.appendingPathComponent(packID, isDirectory: true)
+        verified = verified.filter { !$0.key.hasPrefix(directory.path) }
+        saveVerified()
         if FileManager.default.fileExists(atPath: directory.path) {
             try FileManager.default.removeItem(at: directory)
         }

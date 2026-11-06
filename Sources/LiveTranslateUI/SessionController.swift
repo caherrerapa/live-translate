@@ -42,6 +42,18 @@ final class SessionController: ObservableObject {
     @Published private(set) var exporting = false
     @Published var notionSetupPresented = false
     let levels = LevelMeter()
+    #if DEBUG
+    /// Automated checks feed a recording here instead of the microphone.
+    var automationFeed: URL?
+    #endif
+
+    var isTranslating: Bool {
+        #if os(macOS)
+        translationRunning
+        #else
+        false
+        #endif
+    }
     let catalog: ModelCatalog
     let packID: String
     let platform: String
@@ -53,6 +65,9 @@ final class SessionController: ObservableObject {
     private var pauseStarted: Date?
     private var lastAutosave = Date.distantPast
     private var noteTranslationQueue: [String] = []
+    /// Held while listening so App Nap cannot throttle the transcript when the window is in the background.
+    private var listenActivity: NSObjectProtocol?
+    @Published private(set) var stopping = false
     private let worker = SpeechWorker()
     private let storage: URL
     private var ticker: Task<Void, Never>?
@@ -171,12 +186,30 @@ final class SessionController: ObservableObject {
     // MARK: Listen
 
     func listenOrStop() {
-        if engine.listening || listenWhenReady {
+        if listenWhenReady && !engine.listening {
             stopListening()
             return
         }
+        if engine.listening {
+            // Stop hearing now, but let the words already captured finish before the turn commits.
+            capture.stop()
+            stopping = true
+            worker.drain { [weak self] in
+                self?.stopping = false
+                self?.stopListening()
+            }
+            return
+        }
+        if stopping { return }
         guard engine.listenEnabled, engine.packInstalled else { return }
         if preparingListen { return }
+        #if DEBUG
+        // A recorded test feed does not use the microphone.
+        if automationFeed != nil {
+            beginCapture()
+            return
+        }
+        #endif
         let status = AVCaptureDevice.authorizationStatus(for: .audio)
         if status == .denied || status == .restricted {
             mutate { $0.microphoneDenied = true }
@@ -200,6 +233,10 @@ final class SessionController: ObservableObject {
 
     private func stopListening() {
         listenWhenReady = false
+        if let listenActivity {
+            ProcessInfo.processInfo.endActivity(listenActivity)
+            self.listenActivity = nil
+        }
         capture.stop()
         worker.stop()
         levels.reset()
@@ -374,6 +411,10 @@ final class SessionController: ObservableObject {
             listenStarted = Date()
             paused = false
             pausedTotal = 0
+            listenActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled],
+                reason: "Live translation is listening"
+            )
         } catch {
             captureFailed(error)
         }
@@ -384,6 +425,9 @@ final class SessionController: ObservableObject {
     private func startCapture() throws {
         #if os(macOS)
         capture = audioSource == .systemAudio ? SystemAudioCapture() : MicrophoneCapture()
+        #if DEBUG
+        if let automationFeed { capture = FileCapture(url: automationFeed) }
+        #endif
         #else
         capture = MicrophoneCapture()
         #endif
@@ -401,6 +445,10 @@ final class SessionController: ObservableObject {
     }
 
     private func captureFailed(_ error: Error) {
+        if let listenActivity {
+            ProcessInfo.processInfo.endActivity(listenActivity)
+            self.listenActivity = nil
+        }
         capture.stop()
         worker.stop()
         library.listening = false
@@ -1053,14 +1101,25 @@ final class SessionController: ObservableObject {
         if let pass { runNotesPass(pass) }
     }
 
+    #if DEBUG
+    /// When notes passes ran, for correlating with stalls in automated checks.
+    private(set) var notesActivity: [(start: Date, end: Date?)] = []
+    #endif
+
     private func runNotesPass(_ input: NotesInput) {
         let model = engine.notes.model
         notesRunning = true
+        #if DEBUG
+        notesActivity.append((Date(), nil))
+        #endif
         notesQueue.async { [weak self] in
             let draft = model(input)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.notesRunning = false
+                #if DEBUG
+                if let last = self.notesActivity.indices.last { self.notesActivity[last].end = Date() }
+                #endif
                 self.mutate { $0.notes.finishDeferredPass(draft, now: Date()) }
             }
         }
@@ -1135,6 +1194,11 @@ extension SessionController {
         )
         controller.loadDemo()
         return controller
+    }
+
+    func demoPackMissing() {
+        mutate { $0.clear(); $0.packInstalled = false }
+        speechStatus = .idle
     }
 
     func stopDemoListening() {

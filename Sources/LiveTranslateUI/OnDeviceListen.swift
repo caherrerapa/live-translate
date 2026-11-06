@@ -74,7 +74,12 @@ enum OnDevicePaths {
             let phone = root.appendingPathComponent("models/chindamt-4b-4bit")
             return FileManager.default.fileExists(atPath: phone.appendingPathComponent("config.json").path) ? phone : nil
         }
-        let chosen = TranslatorChoice.macModelID(bf16LagSeconds: MacTranslationSpike.bf16LagSeconds)
+        // bf16 met the lag on the M4, but next to speech and the 7B notes model it pushes a
+        // 32 GB Mac into swap. It is used only with memory to spare; otherwise the pack's 8-bit file.
+        let roomy = ProcessInfo.processInfo.physicalMemory >= 48 * 1_073_741_824
+        let chosen = roomy
+            ? TranslatorChoice.macModelID(bf16LagSeconds: MacTranslationSpike.bf16LagSeconds)
+            : TranslatorChoice.macDefaultID
         let preferred = root.appendingPathComponent("models").appendingPathComponent(chosen)
         if FileManager.default.fileExists(atPath: preferred.appendingPathComponent("config.json").path) {
             return preferred

@@ -520,6 +520,9 @@ enum SnapshotCLI {
             guard let controller = SessionController.demo() else { exit(3) }
             let models = args.contains("--models")
             if models { controller.stopDemoListening() }
+            if args.contains("--missing") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { controller.demoPackMissing() }
+            }
             let captions = args.contains("--captions")
             let sidebar = args.contains("--sidebar")
             let inspector = args.contains("--inspector")

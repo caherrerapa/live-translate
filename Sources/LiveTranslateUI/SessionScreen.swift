@@ -18,6 +18,12 @@ struct TranscriptFile: FileDocument {
 
 enum AppStorageRoot {
     static func url() -> URL {
+        // A separate root for automated checks, so they never touch the user's packs or sessions.
+        if let override = ProcessInfo.processInfo.environment["LT_STORAGE"], !override.isEmpty {
+            let url = URL(fileURLWithPath: override, isDirectory: true)
+            try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            return url
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         let url = base.appendingPathComponent("LiveTranslate", isDirectory: true)
