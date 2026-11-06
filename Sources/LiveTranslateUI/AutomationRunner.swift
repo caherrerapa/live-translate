@@ -11,6 +11,9 @@ final class FileCapture: AudioCapturing, @unchecked Sendable {
     private var running = false
     private let lock = NSLock()
 
+    /// The endurance check loops one short recording instead of holding hours of audio in memory.
+    static var repeating = false
+
     init(url: URL) { self.url = url }
 
     func start(onSamples: @escaping ([Float]) -> Void, onError: @escaping (Error) -> Void) throws {
@@ -20,7 +23,9 @@ final class FileCapture: AudioCapturing, @unchecked Sendable {
             let hop = 320
             let tail = [Float]()  // Stop arrives right after the last word; the drain must recover it.
             let all = samples + tail
+            let repeating = FileCapture.repeating
             var offset = 0
+            var played = 0
             let start = Date()
             while offset < all.count {
                 guard let self else { return }
@@ -28,8 +33,10 @@ final class FileCapture: AudioCapturing, @unchecked Sendable {
                 guard on else { return }
                 let end = min(offset + hop, all.count)
                 onSamples(Array(all[offset..<end]))
+                played += end - offset
                 offset = end
-                let wait = start.addingTimeInterval(Double(offset) / 16_000).timeIntervalSinceNow
+                if repeating, offset >= all.count { offset = 0 }
+                let wait = start.addingTimeInterval(Double(played) / 16_000).timeIntervalSinceNow
                 if wait > 0 { Thread.sleep(forTimeInterval: wait) }
             }
         }
@@ -382,6 +389,22 @@ enum AutomationRunner {
         check("Translator status recovers", { if case .ready = controller.translatorStatus { return true }; return false }(), "\(controller.translatorStatus)")
     }
 
+    /// Resident memory of this app's helper processes (translator, notes model), in MB.
+    private static func helpersMB() -> Double {
+        let shell = Process()
+        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
+        let me = ProcessInfo.processInfo.processIdentifier
+        shell.arguments = ["-c", "ps -o rss= -p $(pgrep -d, -P \(me)) 2>/dev/null"]
+        let pipe = Pipe()
+        shell.standardOutput = pipe
+        shell.standardError = FileHandle.nullDevice
+        guard (try? shell.run()) != nil else { return 0 }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        shell.waitUntilExit()
+        let kilobytes = String(decoding: data, as: UTF8.self).split(whereSeparator: \.isWhitespace).compactMap { Double($0) }
+        return kilobytes.reduce(0, +) / 1024
+    }
+
     private static func residentMB() -> Double {
         var info = mach_task_basic_info()
         var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
@@ -533,10 +556,9 @@ enum AutomationRunner {
         let en = (try? FileCapture.read(english)) ?? []
         let th = (try? FileCapture.read(thai)) ?? []
         let gap = [Float](repeating: 0, count: 16_000)
-        var long: [Float] = []
-        while Double(long.count) / 16_000 < minutes * 60 {
-            long += en + gap + th + gap
-        }
+        let long = en + gap + th + gap
+        FileCapture.repeating = true
+        defer { FileCapture.repeating = false }
         let url = folder.appendingPathComponent("endurance.wav")
         if let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false),
            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(long.count)),
@@ -553,11 +575,13 @@ enum AutomationRunner {
         controller.listenOrStop()
         _ = await waitUntil(10) { controller.engine.listening }
         var samples: [(Double, Double)] = []
+        var helpers: [Double] = []
         let start = Date()
         while Date().timeIntervalSince(start) < minutes * 60 + 5 {
             await sleep(30)
             samples.append((Date().timeIntervalSince(start) / 60, residentMB()))
-            print(String(format: "AUTOMATION endurance %.1f min resident %.0f MB turns %d", samples.last!.0, samples.last!.1, controller.engine.turns.count))
+            helpers.append(helpersMB())
+            print(String(format: "AUTOMATION endurance %.1f min resident %.0f MB helpers %.0f MB turns %d", samples.last!.0, samples.last!.1, helpers.last!, controller.engine.turns.count))
             fflush(stdout)
         }
         controller.listenOrStop()
@@ -569,9 +593,20 @@ enum AutomationRunner {
         let growth = (late.reduce(0, +) / Double(max(late.count, 1))) - (early.reduce(0, +) / Double(max(early.count, 1)))
         check("Endurance: session ran the whole time", samples.count >= Int(minutes * 2), "\(samples.count) samples, \(controller.engine.turns.count) turns")
         check("Endurance: memory stays flat", growth < 150, String(format: "growth %.0f MB after warm-up; samples %@", growth, samples.map { String(format: "%.0f", $0.1) }.joined(separator: ",")))
+        let helperGrowth = (helpers.suffix(2).reduce(0, +) / Double(max(min(helpers.count, 2), 1)))
+            - (helpers.dropFirst(2).prefix(2).reduce(0, +) / Double(max(min(max(helpers.count - 2, 0), 2), 1)))
+        check("Endurance: translator and notes memory stay flat", helperGrowth < 400,
+              String(format: "growth %.0f MB; last %.0f MB", helperGrowth, helpers.last ?? 0))
         check("Endurance: main thread responsive", worst < 0.25, String(format: "worst stall %.0f ms", worst * 1000))
         let translated = controller.engine.turns.filter { !$0.translationCommitted.isEmpty }.count
         check("Endurance: turns keep translating", translated >= controller.engine.turns.count / 2, "\(translated) of \(controller.engine.turns.count) turns translated")
+        // A long meeting must still translate at the end, not only in the first minutes.
+        let recent = controller.engine.turns.filter { !$0.sourceDisplay.isEmpty }.suffix(10)
+        let recentTranslated = recent.filter { !$0.translationCommitted.isEmpty }.count
+        check("Endurance: the last turns are translated too", recentTranslated >= recent.count - 1 && !recent.isEmpty,
+              "\(recentTranslated) of the last \(recent.count)")
+        check("Endurance: the summary is written", !controller.engine.notes.note.summary.isEmpty,
+              String(controller.engine.notes.note.summary.map(\.text).joined(separator: " ").prefix(120)))
     }
 
     /// The design's shortcuts, sent as real key events through the app's menu bar:
