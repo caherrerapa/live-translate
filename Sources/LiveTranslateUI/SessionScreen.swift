@@ -133,14 +133,7 @@ struct SessionScreen: View {
     @ViewBuilder
     private var phoneBody: some View {
         #if os(iOS)
-        PhoneSessionView(
-            controller: controller,
-            arrangement: arrangement,
-            pages: chrome.pageSwitch,
-            beside: chrome.bottomProminent == chrome.prominent ? chrome.bottomBeside : []
-        )
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(chrome.navigationBar.contains(.direction) ? "Live Translate" : "")
+        PhoneAppView(controller: controller)
         #else
         EmptyView()
         #endif

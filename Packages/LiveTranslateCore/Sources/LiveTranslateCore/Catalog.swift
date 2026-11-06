@@ -53,6 +53,22 @@ enum SpeechLanguage: String, Codable, Equatable, Hashable, CaseIterable, Identif
         }
     }
 
+    /// The language's name in its own script, for language lists.
+    var nativeName: String {
+        switch self {
+        case .thai: return "ไทย"
+        case .english: return "English"
+        case .chinese: return "中文"
+        case .japanese: return "日本語"
+        case .korean: return "한국어"
+        case .vietnamese: return "Tiếng Việt"
+        case .indonesian: return "Bahasa Indonesia"
+        case .french: return "Français"
+        case .german: return "Deutsch"
+        case .spanish: return "Español"
+        }
+    }
+
     /// Two-letter label for compact controls (EN, TH, ZH…).
     var short: String { code.uppercased() }
 
