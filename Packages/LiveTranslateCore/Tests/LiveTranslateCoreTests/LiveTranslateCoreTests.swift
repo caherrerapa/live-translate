@@ -748,10 +748,8 @@ final class LiveTranslateCoreTests: XCTestCase {
         let source = try sessionScreenSource()
         XCTAssertTrue(source.contains("SessionChrome.describe(shell: shell)"))
         let phoneBody = try sourceSlice(source, from: "private var phoneBody", to: "private var macBar")
-        XCTAssertTrue(phoneBody.contains("chrome.navigationBar"))
-        XCTAssertTrue(phoneBody.contains("chrome.bottomProminent"))
-        XCTAssertTrue(phoneBody.contains("chrome.bottomBeside"))
-        XCTAssertTrue(phoneBody.contains("chrome.pageSwitch"))
+        // iPhone: the iOS design's own screens (start, live, session) replace the shared bar layout.
+        XCTAssertTrue(phoneBody.contains("PhoneAppView(controller: controller)"))
         // Mac: direction and Listen lead the bar; every secondary control is one click away, not in a popover.
         let macBar = try sourceSlice(source, from: "private var macBar", to: "private func barButton")
         XCTAssertTrue(macBar.contains("directionPicker"))
