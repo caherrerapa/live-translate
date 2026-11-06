@@ -78,3 +78,14 @@ Claude gets four read-only tools: `list_sessions`, `get_session` (Markdown with 
 File → Connect Google Calendar… (on iPhone: settings → Google Calendar). When a session starts, the meeting happening now names the session, and its attendees and agenda go to the summary and to the Markdown Claude reads. Access is read-only (`calendar.events.readonly`); the refresh token stays in the Keychain.
 
 You need your own OAuth client ID once: in Google Cloud Console create a project, enable the Google Calendar API, configure the OAuth consent screen (add yourself as a test user), and create an OAuth client of type **iOS** with bundle ID `com.caherrerapa.LiveTranslateiOS`. The same client ID works on the Mac.
+
+## Ask the meeting
+
+The side panel on the Mac (Summary | Ask) and the session screen on iPhone (Summary | Transcript | Ask) answer questions about the meeting, citing the turns they come from, and can act in connected apps ("Add the action items to my Notion").
+
+Settings → Connections (⌘, on the Mac; the gear on iPhone) chooses who answers Ask and writes the summary:
+
+- **On this Mac / On device**: Apple Intelligence (falling back to the notes model on the Mac). Private, offline, no connections.
+- **ChatGPT** or **Claude**: the question and the transcript go to that service. OpenAI and Anthropic don't let other apps use a ChatGPT or Claude.ai subscription, so these connect with an API key (kept in the Keychain). Claude uses `claude-opus-5-5` with the MCP connector; ChatGPT uses the Responses API with remote MCP tools.
+
+**Connections** are remote MCP servers Ask can read from and add to. Notion and Linear sign in with one click (MCP OAuth with dynamic registration). Slack's server only signs in registered apps, so it asks for your Slack app's client ID (redirect `livetranslate://oauth/callback`). Google Drive and anything else: Add MCP server… with its URL. Tokens stay in the Keychain and refresh automatically.

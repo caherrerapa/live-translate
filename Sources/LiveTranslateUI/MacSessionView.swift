@@ -10,6 +10,7 @@ private let sessionPalette: [Color] = Theme.speakers
 /// the 300 pt summary panel. The sessions list slides in from the header toggle.
 struct MacSessionView: View {
     @ObservedObject var controller: SessionController
+    @Environment(\.openSettings) private var openSettings
     @State private var copyMenuOpen = false
     @State private var exportFormat: SessionController.ExportFormat?
 
@@ -64,6 +65,14 @@ struct MacSessionView: View {
             if ProcessInfo.processInfo.environment["LT_DEMO"] != nil {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 controller.loadDemo()
+                if ProcessInfo.processInfo.environment["LT_SIDE_PANEL"] == "ask" {
+                    AskEngine.shared.loadDemo(for: controller.displayedRecord)
+                    controller.sidePanel = .ask
+                }
+                if let tab = ProcessInfo.processInfo.environment["LT_SETTINGS_TAB"] {
+                    UserDefaults.standard.set(tab, forKey: "settingsTab")
+                    openSettings()
+                }
                 NSApp.activate()
                 NSApp.windows.first { $0.identifier?.rawValue.hasPrefix("main") == true }?.makeKeyAndOrderFront(nil)
             }
@@ -997,16 +1006,45 @@ struct SummaryInspector: View {
 
     private var record: SessionRecord { controller.displayedRecord }
 
+    @Environment(\.openSettings) private var openSettings
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
+        Group {
+            if controller.sidePanel == .ask {
+                VStack(alignment: .leading, spacing: 0) {
+                    header
+                        .padding(.top, 16)
+                        .padding(.horizontal, 20)
+                    AskPanel(controller: controller, style: .mac, showTurn: { controller.focus($0) }, openSettings: { openSettings() })
+                }
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 22) {
+                        header
+                        summary
+                        keyPoints
+                        actions
+                    }
+                    .padding(.top, 16)
+                    .padding(.bottom, 22)
+                    .padding(.horizontal, 20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .background(Theme.panel)
+    }
+
+    /// Summary | Ask, then Copy for the summary.
+    private var header: some View {
                 HStack(spacing: 8) {
-                    Text("Summary").font(.system(size: 15, weight: .semibold))
-                    if !controller.isViewingPast && (controller.engine.listening || controller.notesRunning) {
+                    DesignSegments(options: [("Summary", SessionController.SidePanel.summary), ("Ask", .ask)], selection: $controller.sidePanel)
+                    if controller.sidePanel == .summary && !controller.isViewingPast && (controller.engine.listening || controller.notesRunning) {
                         Circle().fill(Theme.live).frame(width: 6, height: 6)
-                            .help("Updating live, on this Mac")
+                            .help("The summary is updating live")
                     }
                     Spacer()
+                    if controller.sidePanel == .summary {
                     Button(action: controller.copySummary) {
                         HStack(spacing: 5) {
                             Glyph(kind: .copy, size: 14)
@@ -1019,16 +1057,9 @@ struct SummaryInspector: View {
                     }
                     .buttonStyle(.plain)
                     .help("Copy summary (⌥⌘4)")
+                    }
                 }
-                summary
-                keyPoints
-                actions
-            }
-            .padding(.vertical, 22)
-            .padding(.horizontal, 24)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .background(Theme.panel)
+                .frame(height: 30)
     }
 
     @ViewBuilder

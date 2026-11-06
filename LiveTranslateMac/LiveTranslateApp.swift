@@ -15,6 +15,12 @@ struct LiveTranslateApp: App {
             }
         }
 
+        Settings {
+            if let controller = model.controller {
+                MacSettingsView(controller: controller)
+            }
+        }
+
         // Always-on-top captions for following a call or a talk while using other apps.
         Window("Live Captions", id: CaptionsWindow.id) {
             if let controller = model.controller {

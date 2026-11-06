@@ -62,6 +62,25 @@ final class TyphoonNotesClient: @unchecked Sendable {
         return min(2048, max(480, Int(Double(characters) / 2.5) + 320))
     }
 
+    /// Free-form text from the notes model, for Ask on this Mac. Shares the process with notes passes.
+    func complete(_ prompt: String, maxTokens: Int) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        guard startIfNeeded() else { return "" }
+        let body: [String: Any] = ["id": 2, "prompt": prompt, "max_tokens": maxTokens]
+        guard var line = try? JSONSerialization.data(withJSONObject: body) else { return "" }
+        line.append(0x0A)
+        do {
+            try input?.write(contentsOf: line)
+        } catch {
+            return ""
+        }
+        guard let reply = readLine(timeout: max(120, Double(maxTokens) / 4)),
+              let object = try? JSONSerialization.jsonObject(with: Data(reply.utf8)) as? [String: Any],
+              let text = object["text"] as? String else { return "" }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Ends the process at once. Called on quit: a pass holding `lock` reads EOF and returns.
     func terminateNow() {
         overrideLock.lock()

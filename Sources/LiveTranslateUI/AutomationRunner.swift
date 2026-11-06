@@ -221,6 +221,26 @@ enum AutomationRunner {
             NSApp.terminate(nil)
             return
         }
+        if ProcessInfo.processInfo.environment["LT_AUTOMATION_ONLY"] == "ask" {
+            await askCheck(controller)
+            check("Done", true, folder.path)
+            NSApp.terminate(nil)
+            return
+        }
+        if ProcessInfo.processInfo.environment["LT_AUTOMATION_ONLY"] == "snap" {
+            // Every visible window as a PNG after the demo content settles (LT_DEMO, LT_SIDE_PANEL, LT_SETTINGS_TAB).
+            await sleep(6)
+            for (index, window) in NSApp.windows.enumerated() where window.isVisible && window.frame.height > 200 {
+                guard let view = window.contentView?.superview ?? window.contentView,
+                      let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
+                view.cacheDisplay(in: view.bounds, to: rep)
+                let name = (window.title.isEmpty ? "window" : window.title).replacingOccurrences(of: " ", with: "-")
+                try? rep.representation(using: .png, properties: [:])?.write(to: folder.appendingPathComponent("snap-\(index)-\(name).png"))
+            }
+            check("Done", true, folder.path)
+            NSApp.terminate(nil)
+            return
+        }
         if ProcessInfo.processInfo.environment["LT_AUTOMATION_ONLY"] == "quit" {
             // Quit in the middle of speech: nothing queued for the speech graphs may run during exit.
             controller.setDirection(.englishToThai)
@@ -437,6 +457,52 @@ enum AutomationRunner {
               String(format: "worst input delay %.0f ms over %d events; main-queue stalls %@", inputWorst * 1000, input.count,
                      watchdog.stalls.map { String(format: "%.0f", $0.1 * 1000) }.joined(separator: ",")))
         check("Long meeting: main thread never stalls over 150 ms", worst < 0.15, String(format: "worst %.0f ms", worst * 1000))
+    }
+
+    /// Ask: replies become text, citation chips and action cards; a real on-device answer arrives.
+    private static func askCheck(_ controller: SessionController) async {
+        controller.loadDemo()
+        await sleep(1)
+        let record = controller.displayedRecord
+        let permit = record.turns.first { $0.source.hasPrefix("Probably by the end of next week") }
+        let clock = permit.map { AskParsing.clock(record, $0) } ?? "?"
+        let reply = "Store three opens once the permit arrives, [\(clock)]. If it slips, early February.\nACTION: Notion | 2 tasks added | Send updated timeline · Fri; Share permit decision · Next week | Store rollout › Tasks | https://www.notion.so/x"
+        let parsed = AskParsing.message(from: reply, toolActions: [], record: record)
+        check("Ask: a cited time becomes a chip for its turn", parsed.citations.first?.turnID == permit?.id && !parsed.text.contains("[") && !parsed.text.contains(",."),
+              "\(parsed.citations.map { "\($0.clock) \($0.speaker)" }) · \(parsed.text)")
+        check("Ask: an ACTION line becomes a card", parsed.actions.first.map { $0.app == "Notion" && $0.items.count == 2 && $0.link != nil } ?? false
+              && !parsed.text.contains("ACTION"),
+              parsed.actions.map { "\($0.app) \($0.result) \($0.items) \($0.location)" }.joined())
+        let system = AskParsing.system(for: record, apps: ["Notion"], budget: 400_000)
+        check("Ask: the prompt carries the transcript with times and the connected apps",
+              system.contains("[\(clock)]") && system.contains("Notion") && system.contains("ACTION:"), "\(system.count) characters")
+        // A real answer from the model on this Mac.
+        let previous = AIConnections.shared.provider
+        AIConnections.shared.provider = .onDevice
+        AskEngine.shared.clear(record.id)
+        let started = Date()
+        AskEngine.shared.ask("When do they expect the permit, and what happens if it slips?", about: record)
+        let answered = await waitUntil(240) { !AskEngine.shared.thinking.contains(record.id) }
+        let answer = AskEngine.shared.messages(for: record.id).last
+        check("Ask: on this Mac answers from the transcript", answered && answer?.role == .assistant && !(answer?.text.isEmpty ?? true),
+              String(format: "%.1f s: ", Date().timeIntervalSince(started)) + String((answer?.text ?? "none").prefix(160)))
+        check("Ask: the answer mentions the permit timing",
+              ["week", "february", "feb"].contains { answer?.text.lowercased().contains($0) == true },
+              answer?.citations.map(\.clock).joined(separator: ",") ?? "")
+        AIConnections.shared.provider = previous
+        snapshot("ask-live")
+        // Sign-in discovery against the real servers (read-only: nothing is registered).
+        for preset in MCPConnection.presets where !preset.url.isEmpty {
+            guard let url = URL(string: preset.url) else { continue }
+            do {
+                let found = try await MCPAuth.discover(server: url)
+                let ready = preset.needsClientID ? true : found.registrationEndpoint != nil
+                check("Connect \(preset.name): sign-in discovered", ready,
+                      "\(found.authorizationEndpoint.host ?? "?") · register \(found.registrationEndpoint?.absoluteString ?? "none (needs a client ID)") · scope \(found.scope ?? "-")")
+            } catch {
+                check("Connect \(preset.name): sign-in discovered", false, error.localizedDescription)
+            }
+        }
     }
 
     /// Kills this app's own translator process mid-session, the way a crash or the

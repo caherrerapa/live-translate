@@ -25,6 +25,10 @@ final class SessionController: ObservableObject {
     @Published var claudeSetupPresented = false
     /// The "Google Calendar" sheet.
     @Published var calendarSetupPresented = false
+    /// The Mac side panel's segment: the summary, or Ask about this meeting.
+    @Published var sidePanel: SidePanel = .summary
+
+    enum SidePanel: Hashable { case summary, ask }
     @Published var renaming = false
     @Published var renameText = ""
     @Published var exportPresented = false
@@ -115,8 +119,15 @@ final class SessionController: ObservableObject {
         #if os(macOS)
         notesClient.packID = packID
         let client = notesClient
+        AskLocalModel.client = client
         var notes = NotesReducer { input in
-            NotesProductionPass.produce(input: input) { client.draft(for: $0) }
+            NotesProductionPass.produce(input: input) { input in
+                // ChatGPT or Claude write the summary when chosen in Settings → Connections.
+                if let text = AskBackends.cloudDraftText(prompt: NotesProductionPass.prompt(for: input)) {
+                    return NotesProductionPass.draft(parsing: text, fallbackTurnID: input.turns.last?.id ?? "")
+                }
+                return client.draft(for: input)
+            }
         }
         // The notes model takes seconds per pass. It runs on `notesQueue`, never inline on the main thread.
         notes.defersModel = true
@@ -126,7 +137,12 @@ final class SessionController: ObservableObject {
             // Apple Intelligence writes the summary on the iPhone, off the main thread like the Mac's model.
             let client = AppleNotesClient()
             notes = NotesReducer { input in
-                NotesProductionPass.produce(input: input) { client.draft(for: $0) }
+                NotesProductionPass.produce(input: input) { input in
+                    if let text = AskBackends.cloudDraftText(prompt: NotesProductionPass.prompt(for: input)) {
+                        return NotesProductionPass.draft(parsing: text, fallbackTurnID: input.turns.last?.id ?? "")
+                    }
+                    return client.draft(for: input)
+                }
             }
             notes.defersModel = true
         } else {

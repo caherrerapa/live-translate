@@ -11,6 +11,7 @@ struct PhoneAppView: View {
     @State private var picking: PhoneLanguageSide?
     /// Set when the chosen pair still needs Apple's translation model; the system then asks to download it.
     @State private var translationSetup: TranslationSession.Configuration?
+    @State private var settingsDemo = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -30,6 +31,9 @@ struct PhoneAppView: View {
         }
         .sheet(item: $picking) { side in
             PhoneLanguagePicker(controller: controller, side: side)
+        }
+        .sheet(isPresented: $settingsDemo) {
+            PhoneSettingsView(controller: controller)
         }
         .sheet(isPresented: $controller.calendarSetupPresented) {
             ScrollView { CalendarSettingsView() }
@@ -63,6 +67,13 @@ struct PhoneAppView: View {
                 stop()
             case "listen":
                 start()
+            case "ask":
+                AskEngine.shared.loadDemo(for: controller.displayedRecord)
+                stop()
+            case "settings":
+                controller.listenOrStop()
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                settingsDemo = true
             case "calendar":
                 controller.listenOrStop()
                 controller.calendarSetupPresented = true
@@ -129,6 +140,7 @@ private enum Phone {
 private struct PhoneStartScreen: View {
     @ObservedObject var controller: SessionController
     @Binding var picking: PhoneLanguageSide?
+    @State private var showSettings = false
     let start: () -> Void
     let open: (UUID) -> Void
 
@@ -196,6 +208,9 @@ private struct PhoneStartScreen: View {
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 12)
+        .sheet(isPresented: $showSettings) {
+            PhoneSettingsView(controller: controller)
+        }
     }
 
     private var startCaption: String {
@@ -225,10 +240,7 @@ private struct PhoneStartScreen: View {
             .frame(height: 40)
             .background(Phone.fill, in: Capsule())
             Spacer(minLength: 0)
-            Menu {
-                Button("Languages & Models", systemImage: "waveform") { controller.showModels = true }
-                Button("Google Calendar", systemImage: "calendar") { controller.calendarSetupPresented = true }
-            } label: {
+            Button { showSettings = true } label: {
                 Image(systemName: "slider.horizontal.3")
                     .font(.system(size: 19, weight: .regular))
                     .foregroundStyle(Theme.accent)
@@ -386,20 +398,41 @@ private struct PhoneSessionDetail: View {
     @State private var tab: Tab = .summary
     @State private var copying = false
 
-    enum Tab { case summary, transcript }
+    @State private var settings = false
+
+    enum Tab { case summary, transcript, ask }
 
     var body: some View {
         let record = controller.displayedRecord
         VStack(alignment: .leading, spacing: 0) {
-            Button { dismiss() } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(Theme.accent)
-                    .frame(width: 44, height: 44)
-            }
+            if tab == .ask {
+                // Ask: a compact title bar so the conversation gets the room.
+                ZStack {
+                    Text(verbatim: record.displayTitle)
+                        .font(.system(size: 17, weight: .semibold))
+                        .lineLimit(1)
+                        .padding(.horizontal, 52)
+                    HStack {
+                        backButton
+                        Spacer()
+                    }
+                }
+                .frame(height: 44)
+                .padding(.horizontal, 8)
+                .padding(.top, 8)
+                segments
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                AskPanel(
+                    controller: controller,
+                    style: .phone,
+                    showTurn: { _ in tab = .transcript },
+                    openSettings: { settings = true }
+                )
+            } else {
+            backButton
             .padding(.horizontal, 8)
             .padding(.top, 8)
-            .accessibilityLabel("Back")
             VStack(alignment: .leading, spacing: 4) {
                 Text(verbatim: record.displayTitle)
                     .font(.system(size: 30, weight: .bold))
@@ -417,7 +450,7 @@ private struct PhoneSessionDetail: View {
             ScrollView {
                 Group {
                     switch tab {
-                    case .summary: summary(record)
+                    case .summary, .ask: summary(record)
                     case .transcript: transcript(record)
                     }
                 }
@@ -448,6 +481,10 @@ private struct PhoneSessionDetail: View {
             .padding(.horizontal, 20)
             .padding(.top, 12)
             .padding(.bottom, 8)
+            }
+        }
+        .sheet(isPresented: $settings) {
+            PhoneSettingsView(controller: controller)
         }
         .toolbar(.hidden, for: .navigationBar)
         .onAppear {
@@ -456,6 +493,7 @@ private struct PhoneSessionDetail: View {
             switch ProcessInfo.processInfo.environment["LT_PHONE_SCREEN"] {
             case "copy": copying = true
             case "transcript": tab = .transcript
+            case "ask": tab = .ask
             default: break
             }
             #endif
@@ -468,10 +506,21 @@ private struct PhoneSessionDetail: View {
         }
     }
 
+    private var backButton: some View {
+        Button { dismiss() } label: {
+            Image(systemName: "chevron.left")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(Theme.accent)
+                .frame(width: 44, height: 44)
+        }
+        .accessibilityLabel("Back")
+    }
+
     private var segments: some View {
         HStack(spacing: 0) {
             segment("Summary", .summary)
             segment("Transcript", .transcript)
+            segment("Ask", .ask)
         }
         .padding(2)
         .background(Phone.segmentFill, in: RoundedRectangle(cornerRadius: 9))
@@ -636,6 +685,79 @@ private struct PhoneCopySheet: View {
             }
             .padding(.horizontal, 16)
             .frame(height: 56)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: Settings
+
+/// The design's Settings: AI for summaries and Ask, Connections, then languages and the calendar.
+struct PhoneSettingsView: View {
+    @ObservedObject var controller: SessionController
+    @Environment(\.dismiss) private var dismiss
+    @State private var models = false
+    @State private var calendar = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+            }
+            .frame(height: 44)
+            .padding(.horizontal, 20)
+            Text("Settings")
+                .font(.system(size: 34, weight: .bold))
+                .kerning(-0.34)
+                .padding(.horizontal, 20)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 26) {
+                    ConnectionsSettings(phone: true)
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("MORE").font(.system(size: 13)).kerning(0.26).foregroundStyle(Phone.secondary).padding(.horizontal, 16)
+                        VStack(spacing: 0) {
+                            moreRow("Languages & Models", symbol: "waveform") { models = true }
+                            Color(hex: 0xE5E5EA).frame(height: 1).padding(.leading, 58)
+                            moreRow("Google Calendar", symbol: "calendar", detail: GoogleCalendar.shared.account ?? "Not connected") { calendar = true }
+                        }
+                        .background(.white, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 20)
+                .padding(.bottom, 34)
+            }
+        }
+        .padding(.top, 8)
+        .background(Phone.fill.ignoresSafeArea())
+        .sheet(isPresented: $models) {
+            ModelScreen(controller: controller, library: controller.library)
+        }
+        .sheet(isPresented: $calendar) {
+            ScrollView { CalendarSettingsView() }
+                .presentationDragIndicator(.visible)
+        }
+    }
+
+    private func moreRow(_ title: String, symbol: String, detail: String? = nil, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: symbol)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Theme.text)
+                    .frame(width: 30, height: 30)
+                    .background(Phone.fill, in: RoundedRectangle(cornerRadius: 7))
+                Text(title).font(.system(size: 17)).foregroundStyle(Theme.text)
+                Spacer(minLength: 0)
+                if let detail { Text(detail).font(.system(size: 15)).foregroundStyle(Phone.secondary).lineLimit(1) }
+                Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Color(hex: 0xC7C7CC))
+            }
+            .padding(.horizontal, 16)
+            .frame(height: 50)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

@@ -704,6 +704,8 @@ struct ModelScreen: View {
     @ObservedObject var library: ModelLibrary
     /// Set when shown as a panel inside the Mac window instead of a sheet.
     var onDone: (() -> Void)?
+    /// Inside the Settings window: no title or Done, just the lists.
+    var embedded = false
     @Environment(\.dismiss) private var dismiss
     @State private var page: Page = .speech
     @State private var speechLanguage: SpeechLanguage = .thai
@@ -717,7 +719,9 @@ struct ModelScreen: View {
 
     var body: some View {
         Group {
-            if let onDone {
+            if embedded {
+                content
+            } else if let onDone {
                 VStack(spacing: 0) {
                     HStack {
                         Text("Models").font(.headline)
