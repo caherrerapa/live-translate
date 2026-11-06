@@ -1,5 +1,4 @@
 #if os(macOS)
-import Darwin
 import Foundation
 
 /// The worse of the two growing-turn bf16 lags, 0.850 s and 0.867 s.
@@ -42,30 +41,39 @@ enum OnDevicePaths {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
-    /// Installed pack paths. encoder.data sits beside the encoder symlink.
+    /// Installed pack paths, then a produced graph for this trained chunk.
+    /// Int8 does not fall back to the full-precision files.
     static func speechGraph(
         language: SpeechLanguage,
+        chunkMS: Int,
+        precision: String,
         installRoot: URL,
         packID: String
     ) -> (encoder: URL, decoder: URL, joiner: URL, tokens: URL)? {
         let modelID = language == .thai
             ? "typhoon-asr-streaming-nemotron-0.6b"
             : "nemotron-3.5-asr-streaming-0.6b-en"
-        let directory = installRoot
+        let folder = SpeechGraphs.directoryName(language: language, chunkMS: chunkMS, precision: precision)
+        let modelDir = installRoot
             .appendingPathComponent(packID, isDirectory: true)
             .appendingPathComponent(modelID, isDirectory: true)
-        let encoder = directory.appendingPathComponent("encoder.onnx")
-        let decoder = directory.appendingPathComponent("decoder.onnx")
-        let joiner = directory.appendingPathComponent("joiner.onnx")
-        let tokens = directory.appendingPathComponent("tokens.txt")
-        let present = [encoder, decoder, joiner, tokens].allSatisfy {
-            FileManager.default.fileExists(atPath: $0.path)
+        var directories = [modelDir.appendingPathComponent(folder, isDirectory: true)]
+        let accurate = (language == .thai && chunkMS == 1040) || (language == .english && chunkMS == 1120)
+        if precision != "int8", accurate {
+            directories.append(modelDir)
         }
-        return present ? (encoder, decoder, joiner, tokens) : nil
+        if precision != "int8", let root = repoRoot() {
+            directories.append(root.appendingPathComponent("models/onnx").appendingPathComponent(folder))
+        }
+        return SpeechGraphs.existing(directories: directories)
     }
 
-    static func translatorDirectory() -> URL? {
+    static func translatorDirectory(packID: String = PackPolicy.macPackID) -> URL? {
         guard let root = repoRoot() else { return nil }
+        if packID == PackPolicy.phonePackID {
+            let phone = root.appendingPathComponent("models/chindamt-4b-4bit")
+            return FileManager.default.fileExists(atPath: phone.appendingPathComponent("config.json").path) ? phone : nil
+        }
         let chosen = TranslatorChoice.macModelID(bf16LagSeconds: MacTranslationSpike.bf16LagSeconds)
         let preferred = root.appendingPathComponent("models").appendingPathComponent(chosen)
         if FileManager.default.fileExists(atPath: preferred.appendingPathComponent("config.json").path) {
@@ -78,59 +86,73 @@ enum OnDevicePaths {
         return nil
     }
 
-    static func bridge() -> URL? {
+    static func notesDirectory(packID: String) -> URL? {
         guard let root = repoRoot() else { return nil }
-        let url = root.appendingPathComponent("spikes/liblivetranslate_sherpa.dylib")
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        let name = packID == PackPolicy.phonePackID
+            ? "typhoon2-3b-instruct-4bit"
+            : "typhoon2-qwen2.5-7b-instruct-4bit"
+        let url = root.appendingPathComponent("models").appendingPathComponent(name)
+        return FileManager.default.fileExists(atPath: url.appendingPathComponent("config.json").path) ? url : nil
     }
 
+    /// Python that ships inside the built app. The checkout virtualenv is not used.
     static func python() -> URL? {
-        guard let root = repoRoot() else { return nil }
-        let url = root.appendingPathComponent(".venv/bin/python")
+        guard let resource = Bundle.main.resourceURL else { return nil }
+        let url = resource.appendingPathComponent("mlx-runtime/bin/python3")
         return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
     }
 
     static func chindaScript() -> URL? {
-        guard let root = repoRoot() else { return nil }
-        let url = root.appendingPathComponent("spikes/chinda_serve.py")
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        guard let resource = Bundle.main.resourceURL else { return nil }
+        let bundled = resource.appendingPathComponent("chinda_serve.py")
+        return FileManager.default.fileExists(atPath: bundled.path) ? bundled : nil
     }
 }
 
-/// Cache-aware sherpa stream. Thai and English share this loop. Language is the prompt.
+@_silgen_name("lt_open")
+private func lt_open(
+    _ encoder: UnsafePointer<CChar>,
+    _ decoder: UnsafePointer<CChar>,
+    _ joiner: UnsafePointer<CChar>,
+    _ tokens: UnsafePointer<CChar>,
+    _ language: UnsafePointer<CChar>
+) -> OpaquePointer?
+
+@_silgen_name("lt_push")
+private func lt_push(
+    _ handle: OpaquePointer,
+    _ samples: UnsafePointer<Float>?,
+    _ count: Int32,
+    _ out: UnsafeMutablePointer<CChar>,
+    _ capacity: Int32,
+    _ endpoint: UnsafeMutablePointer<Int32>?
+) -> Int32
+
+@_silgen_name("lt_close")
+private func lt_close(_ handle: OpaquePointer)
+
+/// Cache-aware sherpa stream linked into the app. Thai and English share this loop.
 final class SherpaStreamingDecoder: PartialDecoding {
+    let graphDirectory: URL
     private let handle: OpaquePointer
-    private let pushFn: PushFn
-    private let closeFn: CloseFn
+    private var closed = false
 
-    private typealias OpenFn = @convention(c) (
-        UnsafePointer<CChar>, UnsafePointer<CChar>, UnsafePointer<CChar>, UnsafePointer<CChar>, UnsafePointer<CChar>
-    ) -> OpaquePointer?
-    private typealias PushFn = @convention(c) (
-        OpaquePointer, UnsafePointer<Float>?, Int32, UnsafeMutablePointer<CChar>, Int32, UnsafeMutablePointer<Int32>
-    ) -> Int32
-    private typealias CloseFn = @convention(c) (OpaquePointer) -> Void
-
-    private static let library: UnsafeMutableRawPointer? = {
-        guard let url = OnDevicePaths.bridge() else { return nil }
-        return dlopen(url.path, RTLD_NOW)
-    }()
-
-    init?(language: SpeechLanguage, installRoot: URL, packID: String) {
-        guard let library = Self.library,
-              let graph = OnDevicePaths.speechGraph(language: language, installRoot: installRoot, packID: packID),
-              let openSym = dlsym(library, "lt_open"),
-              let pushSym = dlsym(library, "lt_push"),
-              let closeSym = dlsym(library, "lt_close") else {
+    init?(language: SpeechLanguage, chunkMS: Int, precision: String, installRoot: URL, packID: String) {
+        guard let graph = OnDevicePaths.speechGraph(
+            language: language,
+            chunkMS: chunkMS,
+            precision: precision,
+            installRoot: installRoot,
+            packID: packID
+        ) else {
             return nil
         }
-        let open = unsafeBitCast(openSym, to: OpenFn.self)
         let opened = graph.encoder.path.withCString { encoder in
             graph.decoder.path.withCString { decoder in
                 graph.joiner.path.withCString { joiner in
                     graph.tokens.path.withCString { tokens in
                         language.prompt.withCString { prompt in
-                            open(encoder, decoder, joiner, tokens, prompt)
+                            lt_open(encoder, decoder, joiner, tokens, prompt)
                         }
                     }
                 }
@@ -138,8 +160,7 @@ final class SherpaStreamingDecoder: PartialDecoding {
         }
         guard let opened else { return nil }
         handle = opened
-        pushFn = unsafeBitCast(pushSym, to: PushFn.self)
-        closeFn = unsafeBitCast(closeSym, to: CloseFn.self)
+        graphDirectory = graph.encoder.deletingLastPathComponent()
     }
 
     func decode(pcm: [Float]) -> StreamStep {
@@ -148,19 +169,17 @@ final class SherpaStreamingDecoder: PartialDecoding {
         let code = pcm.withUnsafeBufferPointer { samples in
             bytes.withUnsafeMutableBufferPointer { out -> Int32 in
                 guard let base = out.baseAddress else { return -1 }
-                return pushFn(handle, samples.baseAddress, Int32(samples.count), base, Int32(out.count), &endpoint)
+                return lt_push(handle, samples.baseAddress, Int32(samples.count), base, Int32(out.count), &endpoint)
             }
         }
         guard code == 0 else { return StreamStep(text: "", endpoint: false) }
         return StreamStep(text: String(cString: bytes), endpoint: endpoint == 1)
     }
 
-    private var closed = false
-
     func close() {
         guard !closed else { return }
         closed = true
-        closeFn(handle)
+        lt_close(handle)
     }
 }
 

@@ -7,6 +7,7 @@ let package = Package(
     name: "FluidAudioDiarizer",
     platforms: [
         .macOS(.v14),
+        .iOS(.v17),
     ],
     products: [
         .library(name: "FluidAudioDiarizer", targets: ["FluidAudioDiarizer"]),

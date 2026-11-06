@@ -41,7 +41,7 @@ def main() -> None:
             model,
             tokenizer,
             formatted,
-            max_tokens=80,
+            max_tokens=int(message.get("max_tokens") or 80),
             sampler=sampler,
             verbose=False,
         )

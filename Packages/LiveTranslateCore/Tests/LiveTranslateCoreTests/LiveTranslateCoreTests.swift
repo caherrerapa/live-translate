@@ -677,19 +677,108 @@ final class LiveTranslateCoreTests: XCTestCase {
     }
 
     func testSessionScreenUsesColorIndex() throws {
-        var url = URL(fileURLWithPath: #filePath)
-        var screen: URL?
-        for _ in 0..<8 {
-            url.deleteLastPathComponent()
-            let candidate = url.appendingPathComponent("Sources/LiveTranslateUI/SessionScreen.swift")
-            if FileManager.default.fileExists(atPath: candidate.path) {
-                screen = candidate
-                break
-            }
-        }
-        let source = try String(contentsOf: XCTUnwrap(screen), encoding: .utf8)
+        let source = try sessionScreenSource()
         XCTAssertFalse(source.contains("(ordinal - 1)"))
         XCTAssertTrue(source.contains("colorIndex"))
+    }
+
+    func testSessionChromeGroupsTheAlwaysVisibleControls() throws {
+        let mac = SessionChrome.describe(shell: .mac)
+        XCTAssertEqual(mac.alwaysVisible.map(\.title), ["direction", "Listen/Stop"])
+        XCTAssertEqual(mac.prominent, .listenStop)
+        XCTAssertNil(mac.bottomProminent)
+        let secondaryTitles = Set(mac.secondary.map(\.title))
+        for word in ["Highlight", "speakers", "notes", "Fast", "Balanced", "Accurate", "Models", "Type", "Copy", "Save"] {
+            XCTAssertTrue(secondaryTitles.contains(word), word)
+        }
+        XCTAssertEqual(secondaryTitles.count, 10)
+        XCTAssertTrue(Set(mac.alwaysVisible).isDisjoint(with: Set(mac.secondary)))
+        XCTAssertFalse(mac.alwaysVisible.contains(.highlight))
+        XCTAssertFalse(mac.alwaysVisible.contains(.models))
+        XCTAssertFalse(mac.alwaysVisible.contains(.type))
+        XCTAssertFalse(mac.alwaysVisible.contains(.copy))
+        XCTAssertFalse(mac.alwaysVisible.contains(.save))
+        XCTAssertFalse(mac.alwaysVisible.contains(.fast))
+        XCTAssertFalse(mac.alwaysVisible.contains(.balanced))
+        XCTAssertFalse(mac.alwaysVisible.contains(.accurate))
+
+        let pad = SessionChrome.describe(shell: .pad)
+        XCTAssertEqual(pad.alwaysVisible, mac.alwaysVisible)
+        XCTAssertEqual(pad.secondary, mac.secondary)
+        XCTAssertEqual(pad.prominent, .listenStop)
+
+        let phone = SessionChrome.describe(shell: .phone)
+        XCTAssertEqual(phone.navigationBar.map(\.title), ["direction", "Models"])
+        XCTAssertEqual(phone.bottomProminent, .listenStop)
+        XCTAssertEqual(phone.bottomProminent, phone.prominent)
+        XCTAssertEqual(phone.bottomBeside.map(\.title), ["Highlight"])
+        XCTAssertEqual(phone.pageSwitch.map(\.title), ["Conversation", "Notes"])
+        XCTAssertTrue(phone.alwaysVisible.isEmpty)
+        XCTAssertTrue(phone.navigationBar.contains(.models))
+        XCTAssertFalse(phone.navigationBar.contains(.listenStop))
+        XCTAssertNotEqual(phone.bottomBeside.first, phone.bottomProminent)
+
+        XCTAssertEqual(SessionLayout.arrangement(shell: .mac, landscape: false, regularWidth: true), .sideBySide)
+        XCTAssertEqual(SessionLayout.arrangement(shell: .mac, landscape: true, regularWidth: false), .sideBySide)
+        XCTAssertEqual(SessionLayout.arrangement(shell: .phone, landscape: false, regularWidth: false), .stacked)
+        XCTAssertEqual(SessionLayout.arrangement(shell: .phone, landscape: false, regularWidth: true), .stacked)
+        XCTAssertEqual(SessionLayout.arrangement(shell: .phone, landscape: true, regularWidth: false), .sideBySide)
+        XCTAssertEqual(SessionLayout.arrangement(shell: .phone, landscape: true, regularWidth: true), .sideBySide)
+        XCTAssertEqual(SessionLayout.arrangement(shell: .pad, landscape: false, regularWidth: true), .sideBySide)
+        XCTAssertEqual(SessionLayout.arrangement(shell: .pad, landscape: true, regularWidth: true), .sideBySide)
+        XCTAssertEqual(SessionLayout.arrangement(shell: .pad, landscape: true, regularWidth: false), .stacked)
+        XCTAssertEqual(SessionLayout.arrangement(shell: .pad, landscape: false, regularWidth: false), .stacked)
+
+        XCTAssertEqual(ListenPolicy.idleLine, "Listen to translate the room.")
+        XCTAssertEqual(NotesReducer.emptyLine, "Notes appear as the conversation commits.")
+        let missing = ListenPolicy.state(
+            packInstalled: false,
+            packName: "MacBook Pro M4 32GB, best",
+            microphoneDenied: false,
+            listening: false,
+            hasLivePartial: false
+        )
+        guard case .packMissing(let packName) = missing else {
+            return XCTFail("expected a missing pack")
+        }
+        XCTAssertEqual(packName, "MacBook Pro M4 32GB, best")
+        XCTAssertFalse(ListenPolicy.listenEnabled(missing))
+
+        let source = try sessionScreenSource()
+        XCTAssertTrue(source.contains("SessionChrome.describe(shell: shell)"))
+        let phoneBody = try sourceSlice(source, from: "private var phoneBody", to: "private var macBar")
+        XCTAssertTrue(phoneBody.contains("chrome.navigationBar"))
+        XCTAssertTrue(phoneBody.contains("chrome.bottomProminent"))
+        XCTAssertTrue(phoneBody.contains("chrome.bottomBeside"))
+        XCTAssertTrue(phoneBody.contains("chrome.pageSwitch"))
+        let macBar = try sourceSlice(source, from: "private var macBar", to: "private var moreButton")
+        XCTAssertTrue(macBar.contains("ForEach(chrome.alwaysVisible"))
+        XCTAssertTrue(macBar.contains("chrome.secondary"))
+        XCTAssertTrue(macBar.contains("chrome.prominent"))
+        for peer in ["Highlight", "Models", "Copy", "Save", "Fast", "Balanced", "Accurate", "Type"] {
+            XCTAssertFalse(macBar.contains(peer), peer)
+        }
+        XCTAssertTrue(source.contains("control == chrome.prominent"))
+        XCTAssertTrue(source.contains("Stepper(\"Type\""))
+        let typeLine = source.split(separator: "\n").first { $0.contains("Stepper(\"Type\"") }.map(String.init) ?? ""
+        XCTAssertFalse(typeLine.isEmpty)
+        XCTAssertFalse(typeLine.contains("labelsHidden"))
+        XCTAssertTrue(source.contains("Button(\"Models\") { controller.showModels = true }"))
+        XCTAssertTrue(source.contains("Button(\"Settings\", action: controller.openSettings)"))
+        XCTAssertTrue(source.contains("controller.highlight"))
+        XCTAssertTrue(source.contains("controller.copyTranscript"))
+        XCTAssertTrue(source.contains("controller.exportPresented = true"))
+        XCTAssertTrue(source.contains("controller.toggleSpeakers"))
+        XCTAssertTrue(source.contains("controller.toggleNotes"))
+        XCTAssertTrue(source.contains(".disabled(controller.engine.listening)"))
+        XCTAssertTrue(source.contains("!controller.engine.listenEnabled && !controller.engine.listening"))
+        XCTAssertTrue(source.contains("ListenPolicy.idleLine"))
+        XCTAssertTrue(source.contains("NotesReducer.emptyLine"))
+        XCTAssertTrue(source.contains("turn.sourcePrefix"))
+        XCTAssertTrue(source.contains("turn.sourceTail"))
+        for title in ["Title", "Summary", "Decisions", "Actions", "Open questions", "Highlights"] {
+            XCTAssertTrue(source.contains("noteBlock(\"\(title)\""))
+        }
     }
 
     func testMatchingHashInstallsThePackAndEnablesListen() async throws {
@@ -766,6 +855,126 @@ final class LiveTranslateCoreTests: XCTestCase {
         let afterDelete = await installer.isInstalled(packID: PackPolicy.macPackID, files: [spec])
         XCTAssertFalse(afterDelete)
     }
+
+    func testChunkPresetSelectsTrainedGraph() throws {
+        let catalog = try loadCatalog()
+        let thai = try XCTUnwrap(catalog.model(id: "typhoon-asr-streaming-nemotron-0.6b"))
+        let english = try XCTUnwrap(catalog.model(id: "nemotron-3.5-asr-streaming-0.6b-en"))
+        let thaiFast = try XCTUnwrap(ChunkPolicy.milliseconds(language: .thai, preset: .fast, model: thai))
+        let thaiBalanced = try XCTUnwrap(ChunkPolicy.milliseconds(language: .thai, preset: .balanced, model: thai))
+        let thaiAccurate = try XCTUnwrap(ChunkPolicy.milliseconds(language: .thai, preset: .accurate, model: thai))
+        let englishFast = try XCTUnwrap(ChunkPolicy.milliseconds(language: .english, preset: .fast, model: english))
+        let englishBalanced = try XCTUnwrap(ChunkPolicy.milliseconds(language: .english, preset: .balanced, model: english))
+        let englishAccurate = try XCTUnwrap(ChunkPolicy.milliseconds(language: .english, preset: .accurate, model: english))
+        XCTAssertEqual(SpeechGraphs.directoryName(language: .thai, chunkMS: thaiFast, precision: "full"), "typhoon-0.6b-80")
+        XCTAssertEqual(SpeechGraphs.directoryName(language: .thai, chunkMS: thaiBalanced, precision: "full"), "typhoon-0.6b-480")
+        XCTAssertEqual(SpeechGraphs.directoryName(language: .thai, chunkMS: thaiAccurate, precision: "full"), "typhoon-0.6b-1040")
+        XCTAssertEqual(SpeechGraphs.directoryName(language: .english, chunkMS: englishFast, precision: "full"), "nemotron-en-80")
+        XCTAssertEqual(SpeechGraphs.directoryName(language: .english, chunkMS: englishBalanced, precision: "full"), "nemotron-en-320")
+        XCTAssertEqual(SpeechGraphs.directoryName(language: .english, chunkMS: englishAccurate, precision: "full"), "nemotron-en-1120")
+        XCTAssertEqual(SpeechGraphs.directoryName(language: .thai, chunkMS: thaiAccurate, precision: "int8"), "typhoon-0.6b-1040-int8")
+        XCTAssertEqual(PackPolicy.speechPrecision(packID: PackPolicy.phonePackID), "int8")
+    }
+
+    func testProductionNotesPassRejectsCopiedTranslation() {
+        let sentence = "Please send the notes today."
+        let input = NotesInput(
+            note: .empty(),
+            turns: [NotesTurn(id: "t1", translation: sentence, speaker: "Speaker 1", folded: false)]
+        )
+        let copied = NotesDraft(
+            title: sentence,
+            titleTurnID: "t1",
+            summary: [DraftItem(text: sentence, turnID: "t1", speaker: "Speaker 1", contradictsTurnID: nil)],
+            decisions: [DraftItem(text: sentence, turnID: "t1", speaker: "Speaker 1", contradictsTurnID: nil)],
+            actions: [DraftItem(text: "Send the notes", turnID: "t1", speaker: "Speaker 1", contradictsTurnID: nil)],
+            openQuestions: []
+        )
+        let stored = NotesProductionPass.produce(input: input) { _ in copied }
+        XCTAssertNotEqual(stored.title, sentence)
+        XCTAssertTrue(stored.title.isEmpty)
+        XCTAssertTrue(stored.summary.isEmpty)
+        XCTAssertTrue(stored.decisions.isEmpty)
+        XCTAssertEqual(stored.actions.map(\.text), ["Send the notes"])
+        XCTAssertFalse(stored.actions.contains { $0.text == sentence })
+
+        let bareSentence = "Please send the notes today"
+        let bare = NotesDraft(
+            title: bareSentence,
+            titleTurnID: "t1",
+            summary: [DraftItem(text: bareSentence, turnID: "t1", speaker: "Speaker 1", contradictsTurnID: nil)],
+            decisions: [],
+            actions: [],
+            openQuestions: []
+        )
+        let stripped = NotesProductionPass.produce(input: input) { _ in bare }
+        XCTAssertTrue(stripped.title.isEmpty)
+        XCTAssertTrue(stripped.summary.isEmpty)
+    }
+
+    func testIPhoneListenPushesCapturedSamples() throws {
+        let catalog = try loadCatalog()
+        var engine = SessionEngine(
+            catalog: catalog,
+            packID: PackPolicy.phonePackID,
+            packInstalled: true,
+            notes: NotesReducer { _ in
+                NotesDraft(title: "", titleTurnID: "", summary: [], decisions: [], actions: [], openQuestions: [])
+            }
+        )
+        engine.setListening(true)
+        var decoder = RecordingDecoder(text: "hello room")
+        var labeler = ScriptLabeler(raws: [0])
+        let samples: [Float] = [0.02, -0.01, 0.03, 0.0]
+        _ = ListenFeed.push(samples: samples, engine: &engine, decoder: &decoder, labeler: &labeler, at: Date(timeIntervalSince1970: 3_000))
+        XCTAssertEqual(decoder.seen, [samples])
+        XCTAssertEqual(labeler.seen, [samples])
+        XCTAssertTrue(engine.turns.first?.sourceDisplay.contains("hello room") == true)
+
+        var missing = engine
+        missing.packInstalled = false
+        missing.clear()
+        var silent = RecordingDecoder(text: "invented partial")
+        var quiet = ScriptLabeler(raws: [1])
+        _ = ListenFeed.push(samples: samples, engine: &missing, decoder: &silent, labeler: &quiet, at: Date(timeIntervalSince1970: 4_000))
+        XCTAssertTrue(silent.seen.isEmpty)
+        XCTAssertTrue(missing.turns.isEmpty)
+
+        var screen = URL(fileURLWithPath: #filePath)
+        var source = ""
+        for _ in 0..<8 {
+            screen.deleteLastPathComponent()
+            let candidate = screen.appendingPathComponent("Sources/LiveTranslateUI/SessionController.swift")
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                source = try String(contentsOf: candidate, encoding: .utf8)
+                break
+            }
+        }
+        XCTAssertTrue(source.contains("ListenFeed.push"))
+        XCTAssertFalse(source.contains("_ = buffer.samples"))
+    }
+
+    private func sessionScreenSource() throws -> String {
+        var url = URL(fileURLWithPath: #filePath)
+        for _ in 0..<8 {
+            url.deleteLastPathComponent()
+            let candidate = url.appendingPathComponent("Sources/LiveTranslateUI/SessionScreen.swift")
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return try String(contentsOf: candidate, encoding: .utf8)
+            }
+        }
+        XCTFail("SessionScreen.swift")
+        return ""
+    }
+
+    private func sourceSlice(_ source: String, from startMark: String, to endMark: String) throws -> String {
+        guard let start = source.range(of: startMark),
+              let end = source.range(of: endMark, range: start.upperBound..<source.endIndex) else {
+            XCTFail("missing \(startMark) .. \(endMark)")
+            return ""
+        }
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
 }
 
 private struct ScriptLabeler: SpeakerLabeling {
@@ -778,6 +987,16 @@ private struct ScriptLabeler: SpeakerLabeling {
         let raw: Int? = raws.isEmpty ? nil : raws[min(index, raws.count - 1)]
         index += 1
         return raw
+    }
+}
+
+private struct RecordingDecoder: PartialDecoding {
+    var text: String
+    var seen: [[Float]] = []
+
+    mutating func decode(pcm: [Float]) -> StreamStep {
+        seen.append(pcm)
+        return StreamStep(text: text, endpoint: false)
     }
 }
 

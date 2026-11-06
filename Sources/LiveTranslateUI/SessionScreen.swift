@@ -49,9 +49,14 @@ struct SessionScreen: View {
     var shell: AppShell
     var landscape: Bool
     var regularWidth: Bool
+    @State private var showsSecondary = false
 
     private var arrangement: PanelArrangement {
         SessionLayout.arrangement(shell: shell, landscape: landscape, regularWidth: regularWidth)
+    }
+
+    private var chrome: SessionChrome {
+        SessionChrome.describe(shell: shell)
     }
 
     var body: some View {
@@ -97,65 +102,177 @@ struct SessionScreen: View {
     private var phoneBody: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                Picker("Page", selection: $controller.phoneShowsNotes) {
-                    Text("Conversation").tag(false)
-                    Text("Notes").tag(true)
+                if !chrome.pageSwitch.isEmpty {
+                    Picker("Page", selection: $controller.phoneShowsNotes) {
+                        if chrome.pageSwitch.contains(.conversation) {
+                            Text("Conversation").tag(false)
+                        }
+                        if chrome.pageSwitch.contains(.notesPage) {
+                            Text("Notes").tag(true)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
                 }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
                 if controller.phoneShowsNotes {
                     notesColumn
                 } else {
                     panels
                 }
                 HStack(spacing: 12) {
-                    Button("Highlight", action: controller.highlight)
-                        .buttonStyle(.bordered)
-                    Button(controller.listenTitle, action: controller.listenOrStop)
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!controller.engine.listenEnabled && !controller.engine.listening)
-                        .accessibilityIdentifier("listenButton")
+                    ForEach(chrome.bottomBeside, id: \.self) { control in
+                        phoneBeside(control)
+                    }
+                    if chrome.bottomProminent == chrome.prominent {
+                        listenButton
+                            .controlSize(.large)
+                    }
                 }
                 .padding()
             }
             .navigationTitle("Live Translate")
             .toolbar {
-                ToolbarItem {
-                    directionMenu
+                if chrome.navigationBar.contains(.direction) {
+                    ToolbarItem { directionMenu }
                 }
-                ToolbarItem {
-                    Button("Models") { controller.showModels = true }
+                if chrome.navigationBar.contains(.models) {
+                    ToolbarItem {
+                        Button("Models") { controller.showModels = true }
+                    }
                 }
             }
         }
     }
 
     private var macBar: some View {
-        HStack(spacing: 12) {
-            directionMenu
-            Button(controller.listenTitle, action: controller.listenOrStop)
-                .keyboardShortcut(.defaultAction)
-                .disabled(!controller.engine.listenEnabled && !controller.engine.listening)
-                .accessibilityIdentifier("listenButton")
-            Button("Highlight", action: controller.highlight)
-            Button(controller.engine.speakers.chipsVisible ? "Hide speakers" : "Show speakers", action: controller.toggleSpeakers)
-            Button(controller.engine.notesHidden ? "Show notes" : "Hide notes", action: controller.toggleNotes)
-            Picker("Latency", selection: presetBinding) {
-                ForEach(LatencyPreset.allCases, id: \.self) { preset in
-                    Text(preset.title).tag(preset)
-                }
+        HStack(spacing: 16) {
+            ForEach(chrome.alwaysVisible, id: \.self) { control in
+                stripControl(control)
+                    .frame(maxWidth: control == chrome.prominent ? .infinity : 240)
             }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 280)
-            Button("Models") { controller.showModels = true }
-            Stepper("Type", value: $controller.typeScale, in: 0.9...1.6, step: 0.1)
-                .labelsHidden()
-            Button("Copy", action: controller.copyTranscript)
-            Button("Save") { controller.exportPresented = true }
+            if !chrome.secondary.isEmpty {
+                moreButton
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+        .background(.bar)
+    }
+
+    private var moreButton: some View {
+        Button {
+            showsSecondary = true
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.title3)
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel("More")
+        .accessibilityIdentifier("secondaryChrome")
+        .popover(isPresented: $showsSecondary, arrowEdge: .top) {
+            secondaryPanel
+                .padding(16)
+                .frame(minWidth: 320)
+        }
+    }
+
+    @ViewBuilder
+    private func stripControl(_ control: SessionControl) -> some View {
+        switch control {
+        case .direction:
+            directionMenu
+                .frame(maxWidth: 240)
+                .accessibilityIdentifier("directionControl")
+        case .listenStop where control == chrome.prominent:
+            listenButton
+                .keyboardShortcut(.defaultAction)
+                .controlSize(.large)
+        default:
+            EmptyView()
+        }
+    }
+
+    private var listenButton: some View {
+        Button(action: controller.listenOrStop) {
+            Label(controller.listenTitle, systemImage: controller.engine.listening ? "stop.fill" : "waveform")
+                .font(.body.weight(.semibold))
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(!controller.engine.listenEnabled && !controller.engine.listening)
+        .accessibilityIdentifier("listenButton")
+    }
+
+    private var secondaryPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(chrome.secondary, id: \.self) { control in
+                secondaryControl(control)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func secondaryControl(_ control: SessionControl) -> some View {
+        switch control {
+        case .highlight:
+            Button("Highlight", action: controller.highlight)
+                .buttonStyle(.bordered)
+        case .speakers:
+            Button(controller.engine.speakers.chipsVisible ? "Hide speakers" : "Show speakers", action: controller.toggleSpeakers)
+                .buttonStyle(.bordered)
+        case .notes:
+            Button(controller.engine.notesHidden ? "Show notes" : "Hide notes", action: controller.toggleNotes)
+                .buttonStyle(.bordered)
+        case .fast, .balanced, .accurate:
+            if control == chrome.secondary.first(where: { [.fast, .balanced, .accurate].contains($0) }) {
+                latencyPicker
+            }
+        case .models:
+            Button("Models") { controller.showModels = true }
+                .buttonStyle(.bordered)
+        case .type:
+            Stepper("Type", value: $controller.typeScale, in: 0.9...1.6, step: 0.1)
+                .accessibilityIdentifier("typeControl")
+        case .copy:
+            Button("Copy", action: controller.copyTranscript)
+                .buttonStyle(.bordered)
+        case .save:
+            Button("Save") { controller.exportPresented = true }
+                .buttonStyle(.bordered)
+        case .direction, .listenStop, .conversation, .notesPage:
+            EmptyView()
+        }
+    }
+
+    private var latencyPicker: some View {
+        Picker("Latency", selection: presetBinding) {
+            ForEach(LatencyPreset.allCases, id: \.self) { preset in
+                if chrome.secondary.contains(latencyControl(preset)) {
+                    Text(preset.title).tag(preset)
+                }
+            }
+        }
+        .pickerStyle(.segmented)
+        .frame(maxWidth: 280)
+    }
+
+    private func latencyControl(_ preset: LatencyPreset) -> SessionControl {
+        switch preset {
+        case .fast: return .fast
+        case .balanced: return .balanced
+        case .accurate: return .accurate
+        }
+    }
+
+    @ViewBuilder
+    private func phoneBeside(_ control: SessionControl) -> some View {
+        switch control {
+        case .highlight:
+            Button("Highlight", action: controller.highlight)
+                .buttonStyle(.bordered)
+        default:
+            EmptyView()
+        }
     }
 
     private var directionMenu: some View {
@@ -209,11 +326,17 @@ struct SessionScreen: View {
     private var emptyRow: some View {
         switch controller.engine.listenState {
         case .packMissing(let packName):
-            paired(Text(packName).font(.title3.weight(.semibold)), Text(packName).font(.title3.weight(.semibold)))
-                .accessibilityIdentifier("packName")
-            Text(controller.statusLine)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 16)
+            VStack(alignment: .leading, spacing: 8) {
+                paired(Text(packName).font(.title3.weight(.semibold)), Text(packName).font(.title3.weight(.semibold)))
+                    .accessibilityIdentifier("packName")
+                Text(controller.statusLine)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                Button("Models") { controller.showModels = true }
+                    .buttonStyle(.borderedProminent)
+                    .padding(.horizontal, 16)
+                    .accessibilityIdentifier("missingPackModels")
+            }
         case .microphoneDenied:
             VStack(alignment: .leading, spacing: 8) {
                 Text("The microphone is off.")

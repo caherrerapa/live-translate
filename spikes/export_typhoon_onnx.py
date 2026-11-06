@@ -27,6 +27,7 @@ DEFAULT_CHECKPOINT = ROOT / "models" / "typhoon-asr-streaming-nemotron-0.6b.nemo
 CHUNK_FRAMES = 13
 LEFT_CHUNKS = 2
 LATENCY_MS = CHUNK_FRAMES * 80
+PINNED_ACCURATE_DIR = "typhoon-0.6b-1040"
 
 ENCODER_INPUT_NAMES = [
     "audio_signal",
@@ -134,7 +135,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--latency-ms", type=int, required=True, choices=[80, 480, 1040])
     args = parser.parse_args()
+    if args.out.name == PINNED_ACCURATE_DIR:
+        raise SystemExit(f"refusing to overwrite the pinned Accurate graph {args.out}")
+    global CHUNK_FRAMES, LATENCY_MS
+    CHUNK_FRAMES = args.latency_ms // 80
+    LATENCY_MS = args.latency_ms
     args.out.mkdir(parents=True, exist_ok=True)
 
     model = nemo_asr.models.ASRModel.restore_from(str(args.checkpoint), map_location="cpu")
@@ -253,7 +260,7 @@ def main() -> None:
         "version": "1",
         "model_author": "Typhoon",
         "url": "https://huggingface.co/typhoon-ai/typhoon-asr-streaming-nemotron-0.6b",
-        "comment": "Transducer branch only. Accurate preset, 1040 ms.",
+        "comment": f"Transducer branch only. Trained chunk {LATENCY_MS} ms.",
         "prompt_dictionary": json.dumps({str(k): int(v) for k, v in prompts.items()}, sort_keys=True),
         "auto_prompt_id": int(prompts["auto"]),
     }

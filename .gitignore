@@ -4,11 +4,14 @@
 .build/
 DerivedData/
 DerivedData-iOS/
+DerivedData-iOSSim/
+__pycache__/
 *.xcuserstate
 xcuserdata/
 
 # Weights downloaded at runtime. The catalog in docs/ stays.
 models/
+runtime/
 *.onnx
 *.mlmodelc
 *.mlpackage

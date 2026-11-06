@@ -8,11 +8,17 @@
 
 /* Begin PBXBuildFile section */
 		AA00000000000000000000B1 /* FluidAudioDiarizer in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000B2 /* FluidAudioDiarizer */; };
+		AA00000000000000000000B4 /* FluidAudioDiarizer in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000B5 /* FluidAudioDiarizer */; };
+		C10000000000000000000001 /* sherpa_bridge.c in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000001 /* sherpa_bridge.c */; };
+		880000000000000000000003 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 880000000000000000000005 /* Assets.xcassets */; };
+		880000000000000000000004 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 880000000000000000000005 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		EE0000000000000000000001 /* LiveTranslate.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LiveTranslate.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		EE0000000000000000000002 /* LiveTranslateiOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LiveTranslateiOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E10000000000000000000001 /* sherpa_bridge.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = spikes/sherpa_bridge.c; sourceTree = "<group>"; };
+		880000000000000000000005 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Sources/LiveTranslateUI/Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -28,6 +34,10 @@
 		};
 		AA0000000000000000000004 /* Sources/LiveTranslateUI */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				880000000000000000000006 /* Exceptions for "Sources/LiveTranslateUI" folder in "LiveTranslate" target */,
+				880000000000000000000007 /* Exceptions for "Sources/LiveTranslateUI" folder in "LiveTranslateiOS" target */,
+			);
 			path = Sources/LiveTranslateUI;
 			sourceTree = "<group>";
 		};
@@ -37,6 +47,23 @@
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		880000000000000000000006 /* Exceptions for "Sources/LiveTranslateUI" folder in "LiveTranslate" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Assets.xcassets,
+			);
+			target = FF0000000000000000000001 /* LiveTranslate */;
+		};
+		880000000000000000000007 /* Exceptions for "Sources/LiveTranslateUI" folder in "LiveTranslateiOS" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Assets.xcassets,
+			);
+			target = FF0000000000000000000002 /* LiveTranslateiOS */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		BB0000000000000000000001 /* Frameworks */ = {
@@ -51,6 +78,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AA00000000000000000000B4 /* FluidAudioDiarizer in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -64,6 +92,8 @@
 				AA0000000000000000000004 /* Sources/LiveTranslateUI */,
 				AA0000000000000000000002 /* LiveTranslateMac */,
 				AA0000000000000000000005 /* LiveTranslateiOS */,
+				E10000000000000000000001 /* sherpa_bridge.c */,
+				880000000000000000000005 /* Assets.xcassets */,
 				DD0000000000000000000001 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -86,7 +116,9 @@
 			buildPhases = (
 				220000000000000000000001 /* Sources */,
 				BB0000000000000000000001 /* Frameworks */,
+				880000000000000000000001 /* Resources */,
 				770000000000000000000001 /* Copy catalog */,
+				770000000000000000000003 /* Copy speech runtime */,
 			);
 			buildRules = (
 			);
@@ -111,6 +143,7 @@
 			buildPhases = (
 				220000000000000000000002 /* Sources */,
 				BB0000000000000000000002 /* Frameworks */,
+				880000000000000000000002 /* Resources */,
 				770000000000000000000002 /* Copy catalog */,
 			);
 			buildRules = (
@@ -123,11 +156,33 @@
 				AA0000000000000000000005 /* LiveTranslateiOS */,
 			);
 			name = LiveTranslateiOS;
+			packageProductDependencies = (
+				AA00000000000000000000B5 /* FluidAudioDiarizer */,
+			);
 			productName = LiveTranslateiOS;
 			productReference = EE0000000000000000000002 /* LiveTranslateiOS.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
+
+/* Begin PBXResourcesBuildPhase section */
+		880000000000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				880000000000000000000003 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		880000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				880000000000000000000004 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXProject section */
 		330000000000000000000001 /* Project object */ = {
@@ -180,6 +235,11 @@
 			package = AA00000000000000000000B3 /* XCLocalSwiftPackageReference "Packages/FluidAudioDiarizer" */;
 			productName = FluidAudioDiarizer;
 		};
+		AA00000000000000000000B5 /* FluidAudioDiarizer */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA00000000000000000000B3 /* XCLocalSwiftPackageReference "Packages/FluidAudioDiarizer" */;
+			productName = FluidAudioDiarizer;
+		};
 /* End XCSwiftPackageProductDependency section */
 
 /* Begin PBXShellScriptBuildPhase section */
@@ -203,6 +263,31 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "mkdir -p \"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\ncp \"${SRCROOT}/docs/model-catalog.json\" \"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/model-catalog.json\"\n";
+		};
+		770000000000000000000003 /* Copy speech runtime */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			enableUserScriptSandboxing = 0;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/.venv/lib/python3.12/site-packages/sherpa_onnx/lib/libsherpa-onnx-c-api.dylib",
+				"$(SRCROOT)/.venv/lib/python3.12/site-packages/sherpa_onnx/lib/libonnxruntime.dylib",
+				"$(SRCROOT)/spikes/chinda_serve.py",
+			);
+			name = "Copy speech runtime";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libsherpa-onnx-c-api.dylib",
+				"$(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libonnxruntime.dylib",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nSRC_LIB=\"${SRCROOT}/.venv/lib/python3.12/site-packages/sherpa_onnx/lib\"\nDEST=\"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}\"\nRES=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\nmkdir -p \"$DEST\" \"$RES\"\ncp -f \"$SRC_LIB/libsherpa-onnx-c-api.dylib\" \"$SRC_LIB/libonnxruntime.dylib\" \"$DEST/\"\ncp -f \"${SRCROOT}/spikes/chinda_serve.py\" \"$RES/chinda_serve.py\"\nif [ -x \"${SRCROOT}/runtime/mlx/bin/python3\" ]; then\n  mkdir -p \"$RES/mlx-runtime\"\n  rsync -a --delete \"${SRCROOT}/runtime/mlx/\" \"$RES/mlx-runtime/\"\nfi\n";
 		};
 		770000000000000000000002 /* Copy catalog */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -232,6 +317,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C10000000000000000000001 /* sherpa_bridge.c in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -297,7 +383,9 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Live Translate listens on this Mac and keeps the audio on this device.";
@@ -305,7 +393,13 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/.venv/lib/python3.12/site-packages/sherpa_onnx/include";
+				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/.venv/lib/python3.12/site-packages/sherpa_onnx/lib";
 				MARKETING_VERSION = 0.1;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lsherpa-onnx-c-api",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.caherrerapa.LiveTranslate;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -321,15 +415,23 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Live Translate listens on this Mac and keeps the audio on this device.";
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/.venv/lib/python3.12/site-packages/sherpa_onnx/include";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/.venv/lib/python3.12/site-packages/sherpa_onnx/lib";
 				MARKETING_VERSION = 0.1;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lsherpa-onnx-c-api",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.caherrerapa.LiveTranslate;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -345,6 +447,7 @@
 				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Live Translate listens on this iPhone and keeps the audio on this device.";
@@ -373,6 +476,7 @@
 				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Live Translate listens on this iPhone and keeps the audio on this device.";

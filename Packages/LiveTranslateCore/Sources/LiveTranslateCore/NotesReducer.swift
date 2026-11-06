@@ -273,3 +273,126 @@ struct NotesReducer {
         return scalars / 6
     }
 }
+
+enum NotesProductionPass {
+    /// The Mac and iPhone notes closures call this. A draft whose text is only
+    /// the committed translation is dropped. Paraphrases stay.
+    static func produce(input: NotesInput, generate: (NotesInput) -> NotesDraft) -> NotesDraft {
+        sanitize(generate(input), input: input)
+    }
+
+    static func sanitize(_ draft: NotesDraft, input: NotesInput) -> NotesDraft {
+        let banned = Set(input.turns.map { normalize($0.translation) }.filter { !$0.isEmpty })
+        func allowed(_ text: String) -> String? {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !banned.contains(normalize(trimmed)) else { return nil }
+            return trimmed
+        }
+        func keep(_ items: [DraftItem]) -> [DraftItem] {
+            items.compactMap { item in
+                guard let text = allowed(item.text) else { return nil }
+                return DraftItem(
+                    text: text,
+                    turnID: item.turnID,
+                    speaker: item.speaker,
+                    contradictsTurnID: item.contradictsTurnID
+                )
+            }
+        }
+        return NotesDraft(
+            title: allowed(draft.title) ?? "",
+            titleTurnID: draft.titleTurnID,
+            summary: keep(draft.summary),
+            decisions: keep(draft.decisions),
+            actions: keep(draft.actions),
+            openQuestions: keep(draft.openQuestions)
+        )
+    }
+
+    static func prompt(for input: NotesInput) -> String {
+        var lines = [
+            "You maintain a live meeting note from committed turns.",
+            "Write in the language of those turns.",
+            "Return one JSON object and no other text.",
+            "Keys: title, title_turn_id, summary, decisions, actions, open_questions.",
+            "summary, decisions, actions, and open_questions are arrays of objects with keys text and turn_id.",
+            "title is a short noun phrase. Do not copy a turn. Each item must be shorter than its turn and must not repeat the turn verbatim.",
+            "Example of a later pass. Previous strings stay character for character, then a shorter new item is added.",
+            "Previous title: Kickoff",
+            "Previous summary:",
+            "t0 | Kickoff set",
+            "Previous decisions:",
+            "(none)",
+            "Previous actions:",
+            "(none)",
+            "Previous questions:",
+            "(none)",
+            "Turns:",
+            "t9 | Speaker 1 | The team moved the kickoff to Tuesday.",
+            "{\"title\":\"Kickoff\",\"title_turn_id\":\"t0\",\"summary\":[{\"text\":\"Kickoff set\",\"turn_id\":\"t0\"},{\"text\":\"Kickoff moved to Tuesday\",\"turn_id\":\"t9\"}],\"decisions\":[],\"actions\":[],\"open_questions\":[]}",
+            "When a previous item is still true, repeat that item's text exactly.",
+            "",
+            "Previous title: \(input.note.title.text)",
+        ]
+        func dump(_ name: String, _ items: [NoteItem]) {
+            lines.append(name)
+            if items.isEmpty {
+                lines.append("(none)")
+            }
+            for item in items where !item.text.isEmpty {
+                lines.append("\(item.turnID) | \(item.text)")
+            }
+        }
+        dump("Previous summary:", input.note.summary)
+        dump("Previous decisions:", input.note.decisions)
+        dump("Previous actions:", input.note.actions)
+        dump("Previous questions:", input.note.openQuestions)
+        lines.append("Turns:")
+        if input.turns.isEmpty {
+            lines.append("(none)")
+        }
+        for turn in input.turns {
+            lines.append("\(turn.id) | \(turn.speaker) | \(turn.translation)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    static func draft(parsing text: String, fallbackTurnID: String) -> NotesDraft {
+        let cleaned = text
+            .replacingOccurrences(of: "```json", with: "")
+            .replacingOccurrences(of: "```", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let start = cleaned.firstIndex(of: "{"),
+              let end = cleaned.lastIndex(of: "}"),
+              let data = String(cleaned[start...end]).data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return NotesDraft(title: "", titleTurnID: "", summary: [], decisions: [], actions: [], openQuestions: [])
+        }
+        func items(_ key: String) -> [DraftItem] {
+            let rows = object[key] as? [[String: Any]] ?? []
+            return rows.compactMap { row in
+                let itemText = row["text"] as? String ?? ""
+                let turnID = (row["turn_id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? fallbackTurnID
+                guard !itemText.isEmpty, !turnID.isEmpty else { return nil }
+                return DraftItem(text: itemText, turnID: turnID, speaker: "", contradictsTurnID: nil)
+            }
+        }
+        let titleTurn = (object["title_turn_id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? fallbackTurnID
+        return NotesDraft(
+            title: object["title"] as? String ?? "",
+            titleTurnID: titleTurn,
+            summary: items("summary"),
+            decisions: items("decisions"),
+            actions: items("actions"),
+            openQuestions: items("open_questions")
+        )
+    }
+
+    static func normalize(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let scalars = trimmed.unicodeScalars.filter { !CharacterSet.punctuationCharacters.contains($0) }
+        return String(String.UnicodeScalarView(scalars))
+            .replacingOccurrences(of: "  ", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}

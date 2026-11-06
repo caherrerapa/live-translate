@@ -194,9 +194,29 @@ enum CatalogError: Error {
     case missingFile
 }
 
+enum SpeechGraphs {
+    /// Folder for one trained chunk. Int8 keeps its own graph and does not reuse full precision.
+    static func directoryName(language: SpeechLanguage, chunkMS: Int, precision: String) -> String {
+        let stem = language == .thai ? "typhoon-0.6b" : "nemotron-en"
+        let name = "\(stem)-\(chunkMS)"
+        return precision == "int8" ? "\(name)-int8" : name
+    }
+
+    static func existing(directories: [URL]) -> (encoder: URL, decoder: URL, joiner: URL, tokens: URL)? {
+        let names = ["encoder.onnx", "decoder.onnx", "joiner.onnx", "tokens.txt"]
+        for directory in directories {
+            let files = names.map { directory.appendingPathComponent($0) }
+            if files.allSatisfy({ FileManager.default.fileExists(atPath: $0.path) }) {
+                return (files[0], files[1], files[2], files[3])
+            }
+        }
+        return nil
+    }
+}
+
 enum ChunkPolicy {
     /// Acceptance map. The value has to be one of the model's trained chunks.
-    /// Fast, Balanced, and Accurate change this number only. They do not change the file.
+    /// Fast, Balanced, and Accurate select that chunk's graph.
     static func milliseconds(language: SpeechLanguage, preset: LatencyPreset, model: SpeechModel) -> Int? {
         let chosen: Int
         switch (language, preset) {

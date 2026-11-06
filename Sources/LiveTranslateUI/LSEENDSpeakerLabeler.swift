@@ -1,4 +1,3 @@
-#if os(macOS)
 import FluidAudioDiarizer
 import Foundation
 
@@ -9,14 +8,22 @@ final class LSEENDSpeakerLabeler: SpeakerLabeling {
     private let diarizer = LSEENDDiarizer()
     private var ready = false
     private var lastRaw: Int?
+    private(set) var failure: String?
+    private(set) var rawTrace: [Int] = []
+
+    var isReady: Bool { ready }
 
     func prepare() async {
         guard !ready else { return }
         do {
             try await diarizer.initialize(variant: .dihard3)
             ready = diarizer.isAvailable
+            if !ready {
+                failure = "LS-EEND initialize returned unavailable"
+            }
         } catch {
             ready = false
+            failure = String(describing: error)
         }
     }
 
@@ -26,11 +33,12 @@ final class LSEENDSpeakerLabeler: SpeakerLabeling {
             try diarizer.addAudio(pcm, sourceSampleRate: 16_000)
             if let update = try diarizer.process(), let raw = update.finalizedSegments.last?.speakerIndex {
                 lastRaw = raw
+                rawTrace.append(raw)
             }
         } catch {
+            failure = String(describing: error)
             return lastRaw
         }
         return lastRaw
     }
 }
-#endif

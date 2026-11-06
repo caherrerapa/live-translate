@@ -22,8 +22,11 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHECKPOINT = ROOT / "models" / "nemotron-3.5-asr-streaming-0.6b.nemo"
+# Trained right-context frames. 80 ms is [56, 0], 320 ms is [56, 3], 1120 ms is [56, 13].
+RIGHT_CONTEXT_BY_MS = {80: 0, 320: 3, 560: 6, 1120: 13}
 RIGHT_CONTEXT = 13  # 1120 ms
 LATENCY_MS = 1120
+PINNED_ACCURATE_DIR = "nemotron-en-1120"
 
 ENCODER_INPUT_NAMES = [
     "audio_signal",
@@ -131,7 +134,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--latency-ms", type=int, required=True, choices=sorted(RIGHT_CONTEXT_BY_MS))
     args = parser.parse_args()
+    if args.out.name == PINNED_ACCURATE_DIR:
+        raise SystemExit(f"refusing to overwrite the pinned Accurate graph {args.out}")
+    global RIGHT_CONTEXT, LATENCY_MS
+    LATENCY_MS = args.latency_ms
+    RIGHT_CONTEXT = RIGHT_CONTEXT_BY_MS[args.latency_ms]
     args.out.mkdir(parents=True, exist_ok=True)
 
     model = nemo_asr.models.ASRModel.restore_from(str(args.checkpoint), map_location="cpu")
@@ -145,7 +154,9 @@ def main() -> None:
     print("last_channel_cache_size", cache)
     print("streaming_cfg", streaming)
     if att != [56, RIGHT_CONTEXT] or cache != 56:
-        raise SystemExit(f"refusing to export att={att} cache={cache}; Accurate English is [56, 13] with cache 56")
+        raise SystemExit(
+            f"refusing to export att={att} cache={cache}; expected [56, {RIGHT_CONTEXT}] with cache 56"
+        )
 
     feature_chunk = second(streaming.chunk_size)
     pre_encode = second(streaming.pre_encode_cache_size)
@@ -240,7 +251,7 @@ def main() -> None:
         "version": "1",
         "model_author": "NVIDIA",
         "url": "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b",
-        "comment": "Transducer branch only. Accurate preset, 1120 ms, prompt en-US.",
+        "comment": f"Transducer branch only. Trained chunk {LATENCY_MS} ms, prompt en-US.",
         "prompt_dictionary": json.dumps({str(k): int(v) for k, v in prompts.items()}, sort_keys=True),
         "auto_prompt_id": int(prompts["auto"]),
     }

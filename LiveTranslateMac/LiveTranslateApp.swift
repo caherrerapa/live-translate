@@ -1,6 +1,5 @@
 import SwiftUI
 
-@main
 struct LiveTranslateApp: App {
     var body: some Scene {
         WindowGroup {

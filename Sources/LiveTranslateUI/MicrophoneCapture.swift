@@ -12,6 +12,11 @@ final class MicrophoneCapture {
     private var started = false
 
     func start(onSamples: @escaping ([Float]) -> Void) throws {
+        #if os(iOS)
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker])
+        try session.setActive(true)
+        #endif
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard let target = AVAudioFormat(

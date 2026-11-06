@@ -25,11 +25,12 @@ final class SessionController: ObservableObject {
     private var ticker: Task<Void, Never>?
     private var preparingListen = false
     private var renameTurnID: String?
+    private var speakerLabeler = LSEENDSpeakerLabeler()
     #if os(macOS)
+    private let notesClient = TyphoonNotesClient()
     private var speech: SherpaStreamingDecoder?
     private var translator: ChindaTranslator?
     private var translationRunning = false
-    private var speakerLabeler = LSEENDSpeakerLabeler()
     #endif
 
     init(catalog: ModelCatalog, packID: String, platform: String, storage: URL) {
@@ -37,9 +38,19 @@ final class SessionController: ObservableObject {
         self.packID = packID
         self.platform = platform
         self.storage = storage
+        #if os(macOS)
+        notesClient.packID = packID
+        let client = notesClient
         let notes = NotesReducer { input in
-            SessionController.draft(from: input)
+            NotesProductionPass.produce(input: input) { client.draft(for: $0) }
         }
+        #else
+        let notes = NotesReducer { input in
+            NotesProductionPass.produce(input: input) { _ in
+                NotesDraft(title: "", titleTurnID: "", summary: [], decisions: [], actions: [], openQuestions: [])
+            }
+        }
+        #endif
         engine = SessionEngine(catalog: catalog, packID: packID, packInstalled: false, notes: notes)
         installer = PackInstaller(root: storage) { url, offset in
             RangeByteSource(url: url, offset: offset)
@@ -141,7 +152,26 @@ final class SessionController: ObservableObject {
 
     func setPreset(_ preset: LatencyPreset) {
         mutate { $0.preset = preset }
+        #if os(macOS)
+        guard engine.listening, engine.packInstalled else { return }
+        speech?.close()
+        openSpeechGraph()
+        #endif
     }
+
+    #if os(macOS)
+    private func openSpeechGraph() {
+        let chunk = engine.chunkMilliseconds() ?? 1040
+        let precision = PackPolicy.speechPrecision(packID: engine.packID)
+        speech = SherpaStreamingDecoder(
+            language: engine.direction.source,
+            chunkMS: chunk,
+            precision: precision,
+            installRoot: storage,
+            packID: engine.packID
+        )
+    }
+    #endif
 
     func toggleNotes() {
         mutate { $0.notesHidden.toggle() }
@@ -202,6 +232,10 @@ final class SessionController: ObservableObject {
         #endif
         let files = pinnedFiles(packID: packID)
         let installed = await installer.isInstalled(packID: packID, files: files)
+        #if os(macOS)
+        notesClient.packID = packID
+        notesClient.stop()
+        #endif
         mutate {
             $0.packID = packID
             $0.packInstalled = installed
@@ -280,7 +314,6 @@ final class SessionController: ObservableObject {
     }
 
     private func beginCapture() {
-        #if os(macOS)
         preparingListen = true
         Task {
             await speakerLabeler.prepare()
@@ -288,9 +321,6 @@ final class SessionController: ObservableObject {
             guard !engine.listening else { return }
             startListening()
         }
-        #else
-        startListening()
-        #endif
     }
 
     private func startListening() {
@@ -298,7 +328,7 @@ final class SessionController: ObservableObject {
         guard engine.listening, engine.packInstalled else { return }
         Task { await installer.setListening(true) }
         #if os(macOS)
-        speech = SherpaStreamingDecoder(language: engine.direction.source, installRoot: storage, packID: engine.packID)
+        openSpeechGraph()
         let chinda = ChindaTranslator()
         if chinda.start() {
             translator = chinda
@@ -328,22 +358,21 @@ final class SessionController: ObservableObject {
     /// go through the cache-aware stream and the ChindaMT scheduler.
     private func keepInMemory(_ samples: [Float]) {
         guard engine.packInstalled, engine.listening else { return }
-        guard let buffer = AudioBuffer.capture(samples: samples, sampleRate: AudioBuffer.captureRate, filePath: nil) else {
-            return
-        }
         #if os(macOS)
         guard var decoder = speech else { return }
+        #else
+        var decoder = MissingSpeechDecoder()
+        #endif
+        var labeler = speakerLabeler
         var request: TranslationRequest?
         mutate { engine in
-            _ = engine.push(buffer: buffer, decoder: &decoder, speakers: &speakerLabeler, at: Date())
-            request = engine.pendingTranslation
+            request = ListenFeed.push(samples: samples, engine: &engine, decoder: &decoder, labeler: &labeler, at: Date())
         }
+        #if os(macOS)
         if let request, !translationRunning {
             translationRunning = true
             runTranslation(request)
         }
-        #else
-        _ = buffer.samples
         #endif
     }
 
@@ -415,17 +444,32 @@ final class SessionController: ObservableObject {
     }
     #endif
 
-    private static func draft(from input: NotesInput) -> NotesDraft {
-        let turn = input.turns.last
-        let text = turn?.translation ?? ""
-        let item = DraftItem(text: text, turnID: turn?.id ?? "", speaker: turn?.speaker ?? "", contradictsTurnID: nil)
-        return NotesDraft(
-            title: text.isEmpty ? "" : String(text.prefix(48)),
-            titleTurnID: turn?.id ?? "",
-            summary: text.isEmpty ? [] : [item],
-            decisions: [],
-            actions: [],
-            openQuestions: []
-        )
+    func listenDiagnostics() -> String {
+        let chunk = engine.chunkMilliseconds() ?? 0
+        let precision = PackPolicy.speechPrecision(packID: engine.packID)
+        let graph = SpeechGraphs.directoryName(language: engine.direction.source, chunkMS: chunk, precision: precision)
+        let notesName = engine.packID == PackPolicy.phonePackID
+            ? "typhoon2-3b-instruct-4bit"
+            : "typhoon2-qwen2.5-7b-instruct-4bit"
+        let translatorName = engine.packID == PackPolicy.phonePackID ? "chindamt-4b-4bit" : "chindamt-4b-8bit"
+        return [
+            "pack_id \(engine.packID)",
+            "pack_installed \(engine.packInstalled)",
+            "listen_enabled \(engine.listenEnabled)",
+            "precision \(precision)",
+            "chunk_ms \(chunk)",
+            "graph \(graph)",
+            "notes_model \(notesName)",
+            "translator \(translatorName)",
+            "labeler LSEENDSpeakerLabeler",
+        ].joined(separator: "\n")
+    }
+}
+
+/// Used when this target has no speech graph loaded. It returns no text.
+struct MissingSpeechDecoder: PartialDecoding {
+    mutating func decode(pcm: [Float]) -> StreamStep {
+        _ = pcm
+        return StreamStep(text: "", endpoint: false)
     }
 }
