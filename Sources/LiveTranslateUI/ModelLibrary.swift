@@ -105,11 +105,16 @@ final class ModelLibrary: ObservableObject {
                     group.addTask { await Self.evaluate(task: task, listing: listing) }
                 }
                 for _ in 0..<8 { addNext() }
+                var lastPublish = Date.distantPast
                 for await candidate in group {
                     if let candidate {
                         found.append(candidate)
-                        // Rows appear as each repo passes, not after the whole search.
-                        results[task] = Self.ranked(found)
+                        // Rows appear as the search goes, batched to twice a second so the
+                        // list is not redrawn for every repo.
+                        if Date().timeIntervalSince(lastPublish) > 0.5 {
+                            results[task] = Self.ranked(found)
+                            lastPublish = Date()
+                        }
                     }
                     addNext()
                 }
@@ -193,7 +198,10 @@ final class ModelLibrary: ObservableObject {
         var done: Int64 = 0
         let transfer = HubTransfer()
         transfers[candidate.id] = transfer
-        defer { transfers[candidate.id] = nil }
+        defer {
+            transfers[candidate.id] = nil
+            transfer.invalidate()
+        }
         status[candidate.id] = .downloading(fraction: 0, bytes: 0)
 
         for (index, file) in candidate.files.enumerated() {
@@ -450,6 +458,16 @@ final class HubTransfer: NSObject, URLSessionDownloadDelegate, @unchecked Sendab
             lock.unlock()
             task.resume()
         }
+    }
+
+    /// A URLSession holds its delegate until invalidated, so every finished install would
+    /// otherwise keep its transfer and session alive for the life of the app.
+    func invalidate() {
+        lock.lock()
+        let session = self.session
+        self.session = nil
+        lock.unlock()
+        session?.finishTasksAndInvalidate()
     }
 
     func pause() {

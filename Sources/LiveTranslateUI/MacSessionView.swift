@@ -88,7 +88,7 @@ struct MacSessionView: View {
         .fileExporter(
             isPresented: Binding(get: { exportFormat != nil }, set: { if !$0 { exportFormat = nil } }),
             document: ExportFile(data: exportFormat.map { controller.exportData($0) } ?? Data()),
-            contentType: .plainText,
+            contentType: exportFormat?.contentType ?? .plainText,
             defaultFilename: "\(controller.displayedRecord.displayTitle).\(exportFormat?.fileExtension ?? "txt")"
         ) { _ in exportFormat = nil }
     }
@@ -407,6 +407,9 @@ struct CopyMenuPanel: View {
             }
             CopyMenuRow(glyph: .bullets, title: "Summary", detail: nil, shortcut: "⌥⌘4") {
                 controller.copySession(.summary); close()
+            }
+            CopyMenuRow(glyph: .lines, title: "Whole session", detail: "· Markdown", shortcut: "⌥⇧⌘C") {
+                controller.copyMarkdown(); close()
             }
             Theme.border.frame(height: 1).padding(.horizontal, 10).padding(.vertical, 6)
             sectionTitle("Include", top: 2, bottom: 4)

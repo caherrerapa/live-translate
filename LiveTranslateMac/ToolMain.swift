@@ -5,6 +5,8 @@ import Foundation
 @main
 enum LiveTranslateMain {
     static func main() {
+        // Writing to a helper that just died must fail with EPIPE, not kill the app.
+        signal(SIGPIPE, SIG_IGN)
         let args = CommandLine.arguments
         if args.contains("--decode") {
             SpeechCLI.main()

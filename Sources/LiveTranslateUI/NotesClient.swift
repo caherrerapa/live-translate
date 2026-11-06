@@ -4,7 +4,12 @@ import Foundation
 /// Typhoon 2 notes. One local process, text in and text out. The production
 /// pass in `NotesProductionPass` decides what is stored.
 final class TyphoonNotesClient: @unchecked Sendable {
-    var packID = PackPolicy.macPackID
+    /// Set on the main thread, read by a notes pass in the background.
+    var packID: String {
+        get { overrideLock.lock(); defer { overrideLock.unlock() }; return pack }
+        set { overrideLock.lock(); pack = newValue; overrideLock.unlock() }
+    }
+    private var pack = PackPolicy.macPackID
     /// A notes model picked from Hugging Face. Nil uses the pack's model.
     var modelOverride: URL? {
         get { overrideLock.lock(); defer { overrideLock.unlock() }; return override }
@@ -13,6 +18,8 @@ final class TyphoonNotesClient: @unchecked Sendable {
     /// Separate from `lock`, which a notes pass holds for seconds. The main thread only touches this one.
     private let overrideLock = NSLock()
     private var override: URL?
+    /// The live process, readable without `lock` so quitting never waits on a running pass.
+    private var liveProcess: Process?
     private var runningModel: URL?
     private let lock = NSLock()
     private var process: Process?
@@ -35,12 +42,22 @@ final class TyphoonNotesClient: @unchecked Sendable {
         } catch {
             return empty
         }
-        guard let reply = readLine(),
+        // A hung model would hold `lock` forever and starve every later pass.
+        guard let reply = readLine(timeout: 180),
               let object = try? JSONSerialization.jsonObject(with: Data(reply.utf8)) as? [String: Any],
               let text = object["text"] as? String else {
             return empty
         }
         return NotesProductionPass.draft(parsing: text, fallbackTurnID: noteInput.turns.last?.id ?? "")
+    }
+
+    /// Ends the process at once. Called on quit: a pass holding `lock` reads EOF and returns.
+    func terminateNow() {
+        overrideLock.lock()
+        let process = liveProcess
+        liveProcess = nil
+        overrideLock.unlock()
+        process?.terminate()
     }
 
     /// Loads the notes model before the first pass needs it, so a pass in the middle
@@ -93,8 +110,11 @@ final class TyphoonNotesClient: @unchecked Sendable {
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+        let log = HelperLog(name: "notes")
         stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-            _ = handle.availableData
+            let data = handle.availableData
+            guard !data.isEmpty else { handle.readabilityHandler = nil; return }
+            log.append(data)
         }
         do {
             try process.run()
@@ -102,10 +122,14 @@ final class TyphoonNotesClient: @unchecked Sendable {
             return false
         }
         self.process = process
+        overrideLock.lock()
+        liveProcess = process
+        overrideLock.unlock()
         input = stdinPipe.fileHandleForWriting
         output = stdoutPipe.fileHandleForReading
         leftover.removeAll()
-        guard let line = readLine(),
+        // Loading 7B weights from a cold disk is slow, but not this slow.
+        guard let line = readLine(timeout: 300),
               let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
               object["ready"] as? Bool == true else {
             process.terminate()
@@ -115,7 +139,12 @@ final class TyphoonNotesClient: @unchecked Sendable {
         return true
     }
 
-    private func readLine() -> String? {
+    /// Reads one reply line. If none arrives within `timeout`, the process is ended,
+    /// which closes its output and returns nil here.
+    private func readLine(timeout: TimeInterval) -> String? {
+        let watchdog = DispatchWorkItem { [process] in process?.terminate() }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: watchdog)
+        defer { watchdog.cancel() }
         while true {
             if let newline = leftover.firstIndex(of: 0x0A) {
                 let chunk = leftover[..<newline]

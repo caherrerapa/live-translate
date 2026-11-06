@@ -847,7 +847,7 @@ struct TaskModelList: View {
             Section("In use") {
                 builtInRow
                 ForEach(installedHere) { candidate in
-                    CandidateRow(candidate: candidate, controller: controller, library: library)
+                    candidateRow(candidate)
                 }
             }
             Section {
@@ -862,7 +862,7 @@ struct TaskModelList: View {
                     Text("No other compatible models found.").foregroundStyle(.secondary)
                 }
                 ForEach(available) { candidate in
-                    CandidateRow(candidate: candidate, controller: controller, library: library)
+                    candidateRow(candidate)
                 }
             } header: {
                 HStack {
@@ -881,6 +881,24 @@ struct TaskModelList: View {
         .task {
             if library.results[task] == nil { await library.search(task) }
         }
+    }
+
+    private func candidateRow(_ candidate: HubCandidate) -> some View {
+        let library = self.library
+        let controller = self.controller
+        return CandidateRow(
+            candidate: candidate,
+            status: library.status(of: candidate),
+            inUse: library.selected(candidate.task) == candidate,
+            listening: controller.engine.listening,
+            actions: CandidateActions(
+                download: { library.download($0) },
+                pause: { library.pause($0) },
+                delete: { controller.deleteHubModel($0) },
+                use: { controller.choose($0, for: $0.task) }
+            )
+        )
+        .equatable()
     }
 
     private var builtInTitle: String {
@@ -916,14 +934,28 @@ struct TaskModelList: View {
     }
 }
 
-struct CandidateRow: View {
+/// One Hub model. A value view: the list passes in its status, so a search result or
+/// download progress redraws only the row it concerns.
+/// What a candidate row can ask for, bound once by the list.
+struct CandidateActions {
+    let download: (HubCandidate) -> Void
+    let pause: (HubCandidate) -> Void
+    let delete: (HubCandidate) -> Void
+    let use: (HubCandidate) -> Void
+}
+
+struct CandidateRow: View, Equatable {
     let candidate: HubCandidate
-    @ObservedObject var controller: SessionController
-    @ObservedObject var library: ModelLibrary
+    let status: ModelLibrary.Status
+    let inUse: Bool
+    let listening: Bool
+    let actions: CandidateActions
+
+    static func == (lhs: CandidateRow, rhs: CandidateRow) -> Bool {
+        lhs.candidate == rhs.candidate && lhs.status == rhs.status && lhs.inUse == rhs.inUse && lhs.listening == rhs.listening
+    }
 
     var body: some View {
-        let status = library.status(of: candidate)
-        let inUse = library.selected(candidate.task) == candidate
         HStack(alignment: .top, spacing: 10) {
             if status == .installed {
                 Image(systemName: inUse ? "largecircle.fill.circle" : "circle")
@@ -998,24 +1030,24 @@ struct CandidateRow: View {
         HStack {
             switch status {
             case .notInstalled, .failed:
-                Button("Download") { library.download(candidate) }
-                    .disabled(controller.engine.listening)
+                Button("Download") { actions.download(candidate) }
+                    .disabled(listening)
             case .downloading:
-                Button("Pause") { library.pause(candidate) }
-                Button("Cancel", role: .destructive) { controller.deleteHubModel(candidate) }
+                Button("Pause") { actions.pause(candidate) }
+                Button("Cancel", role: .destructive) { actions.delete(candidate) }
             case .paused:
-                Button("Resume") { library.download(candidate) }
-                    .disabled(controller.engine.listening)
-                Button("Cancel", role: .destructive) { controller.deleteHubModel(candidate) }
+                Button("Resume") { actions.download(candidate) }
+                    .disabled(listening)
+                Button("Cancel", role: .destructive) { actions.delete(candidate) }
             case .verifying:
                 EmptyView()
             case .installed:
                 if !inUse {
-                    Button("Use") { controller.choose(candidate, for: candidate.task) }
+                    Button("Use") { actions.use(candidate) }
                         .buttonStyle(.borderedProminent)
                 }
                 Button(role: .destructive) {
-                    controller.deleteHubModel(candidate)
+                    actions.delete(candidate)
                 } label: {
                     Image(systemName: "trash")
                 }

@@ -2,6 +2,7 @@
 import AppKit
 import AVFoundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Debug-only stand-in for the microphone: plays a recording into the session at
 /// real-time speed, so the running app can be checked without someone talking.
@@ -183,6 +184,40 @@ enum AutomationRunner {
             NSApp.terminate(nil)
             return
         }
+        if ProcessInfo.processInfo.environment["LT_AUTOMATION_ONLY"] == "sheet" {
+            let watchdog = MainThreadWatchdog()
+            watchdog.start()
+            print("AUTOMATION MARK sheet"); fflush(stdout)
+            for _ in 0..<3 {
+                controller.showModels = true
+                await sleep(4)
+                controller.showModels = false
+                await sleep(1.5)
+            }
+            let worst = watchdog.stop()
+            check("Models sheet opens without stalling", worst < 0.25, String(format: "worst stall %.0f ms; ", worst * 1000) + watchdog.stalls.map { String(format: "%.0f", $0.1 * 1000) }.joined(separator: ","))
+            check("Done", true, folder.path)
+            NSApp.terminate(nil)
+            return
+        }
+        if ProcessInfo.processInfo.environment["LT_AUTOMATION_ONLY"] == "recover" {
+            await translatorRecoveryCheck(controller, thai: thai)
+            check("Done", true, folder.path)
+            NSApp.terminate(nil)
+            return
+        }
+        if ProcessInfo.processInfo.environment["LT_AUTOMATION_ONLY"] == "stress" {
+            await stressCheck(controller, english: english, thai: thai)
+            check("Done", true, folder.path)
+            NSApp.terminate(nil)
+            return
+        }
+        if ProcessInfo.processInfo.environment["LT_AUTOMATION_ONLY"] == "endurance" {
+            await enduranceCheck(controller, english: english, thai: thai)
+            check("Done", true, folder.path)
+            NSApp.terminate(nil)
+            return
+        }
         if ProcessInfo.processInfo.environment["LT_AUTOMATION_ONLY"] == "keys" {
             await keyboardCheck(controller)
             check("Done", true, folder.path)
@@ -289,6 +324,220 @@ enum AutomationRunner {
         check("\(label): translated to Thai", translation.unicodeScalars.contains { (0x0E00...0x0E7F).contains($0.value) }, translation)
     }
 
+    /// Kills this app's own translator process mid-session, the way a crash or the
+    /// system would, and checks that later turns are still translated.
+    private static func translatorRecoveryCheck(_ controller: SessionController, thai: URL) async {
+        controller.setDirection(.thaiToEnglish)
+        _ = await waitUntil(120) { if case .ready(let name) = controller.speechStatus { return name.contains("Typhoon") }; return false }
+        // Warm the translator so the kill lands on a running process.
+        _ = await waitUntil(60) { if case .ready = controller.translatorStatus { return true }; return false }
+        await sleep(8)
+        let me = ProcessInfo.processInfo.processIdentifier
+        let killer = Process()
+        killer.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        killer.arguments = ["-9", "-P", String(me), "-f", "chindamt"]
+        try? killer.run()
+        killer.waitUntilExit()
+        check("Translator process killed mid-session", killer.terminationStatus == 0, "pkill exit \(killer.terminationStatus) (children of \(me) only)")
+        let turns = await listen(controller, file: thai, direction: .thaiToEnglish, label: "after-kill")
+        let translated = turns.filter { !$0.translationCommitted.isEmpty }
+        check("Turns after the kill are still translated", !translated.isEmpty && translated.count == turns.count,
+              "\(translated.count) of \(turns.count): \(translated.last?.translationCommitted.prefix(80) ?? "")")
+        check("Translator status recovers", { if case .ready = controller.translatorStatus { return true }; return false }(), "\(controller.translatorStatus)")
+    }
+
+    private static func residentMB() -> Double {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        return result == KERN_SUCCESS ? Double(info.resident_size) / 1_048_576 : -1
+    }
+
+    /// Abuse the controls the way an impatient person would, with the main thread watched
+    /// throughout: nothing may crash, hang, or leave the session in a stuck state.
+    private static func stressCheck(_ controller: SessionController, english: URL, thai: URL) async {
+        let watchdog = MainThreadWatchdog()
+        watchdog.start()
+        let began = Date()
+        var marks: [(Double, String)] = []
+        func mark(_ name: String) { marks.append((Date().timeIntervalSince(began), name)) }
+        controller.setDirection(.englishToThai)
+        _ = await waitUntil(120) { if case .ready = controller.speechStatus { return true }; return false }
+        controller.automationFeed = english
+
+        mark("listen/stop storm")
+        // 1. Listen / Stop as fast as the button can be pressed.
+        for _ in 0..<25 {
+            controller.listenOrStop()
+            await sleep(Double.random(in: 0.02...0.25))
+            controller.listenOrStop()
+            await sleep(Double.random(in: 0.0...0.1))
+        }
+        let settled = await waitUntil(20) { !controller.engine.listening && !controller.stopping && !controller.isPreparing }
+        check("Rapid Listen/Stop settles stopped", settled, "listening \(controller.engine.listening) stopping \(controller.stopping)")
+
+        mark("pause storm")
+        // 2. Pause / Resume storm while listening, then Stop.
+        controller.listenOrStop()
+        let relisten = await waitUntil(10) { controller.engine.listening }
+        check("Listen works right after the Listen/Stop storm", relisten,
+              "listening \(controller.engine.listening) preparing \(controller.isPreparing) stopping \(controller.stopping) speech \(controller.speechStatus) enabled \(controller.engine.listenEnabled) installed \(controller.engine.packInstalled) state \(controller.engine.listenState)")
+        var dropped: String?
+        for step in 0..<30 {
+            controller.pauseOrResume()
+            await sleep(Double.random(in: 0.0...0.08))
+            if dropped == nil && !controller.engine.listening {
+                dropped = "step \(step): paused \(controller.paused) toast \(controller.toast ?? "-") denied \(controller.engine.microphoneDenied)"
+            }
+        }
+        if controller.paused { controller.pauseOrResume() }
+        await sleep(1)
+        check("Pause/Resume storm keeps listening", controller.engine.listening && !controller.paused,
+              "listening \(controller.engine.listening) paused \(controller.paused) dropped at \(dropped ?? "never")")
+        controller.listenOrStop()
+        _ = await waitUntil(20) { !controller.engine.listening && !controller.stopping }
+
+        mark("direction churn")
+        // 3. Direction, preset, and language changes while the next graph is still loading.
+        for direction in [TranslationDirection.thaiToEnglish, .englishToThai, .thaiToEnglish, TranslationDirection(source: .chinese, target: .english), .englishToThai] {
+            controller.setDirection(direction)
+            controller.setPreset([.fast, .balanced, .accurate].randomElement()!)
+            await sleep(Double.random(in: 0.0...0.3))
+        }
+        controller.setPreset(.accurate)
+        let reloaded = await waitUntil(120) {
+            if case .ready(let name) = controller.speechStatus { return name.contains("EN") }
+            return false
+        }
+        check("Direction and preset churn ends on the right model", reloaded, "\(controller.speechStatus)")
+
+        mark("stop during load")
+        // 4. Listen while the speech model is still loading, then Stop before it is ready.
+        controller.setPreset(.balanced)
+        controller.listenOrStop()
+        controller.listenOrStop()
+        let cancelled = await waitUntil(60) { !controller.isPreparing && !controller.engine.listening }
+        check("Stop during model load cancels cleanly", cancelled, "preparing \(controller.isPreparing) listening \(controller.engine.listening)")
+        controller.setPreset(.accurate)
+        _ = await waitUntil(120) { if case .ready = controller.speechStatus { return true }; return false }
+
+        mark("session actions")
+        // 5. Session actions in the middle of listening.
+        controller.listenOrStop()
+        _ = await waitUntil(10) { controller.engine.listening }
+        await sleep(3)
+        controller.showSessions = true
+        controller.showSummary = false
+        controller.newSession()
+        check("New session while listening stops and saves", !controller.engine.listening && controller.engine.turns.isEmpty, "turns \(controller.engine.turns.count)")
+        controller.listenOrStop()
+        _ = await waitUntil(10) { controller.engine.listening }
+        await sleep(2)
+        if let past = controller.sessions.first(where: { $0.id != controller.current.id }) {
+            controller.open(past.id)
+            await sleep(0.5)
+            controller.viewingID = nil
+        }
+        controller.deleteSession(controller.current.id)
+        check("Deleting the live session stops cleanly", !controller.engine.listening, "listening \(controller.engine.listening)")
+        controller.showSummary = true
+        controller.showSessions = false
+
+        mark("copy/export")
+        // 6. Copy everything while a session is live, and an empty session.
+        controller.listenOrStop()
+        _ = await waitUntil(10) { controller.engine.listening }
+        await sleep(2)
+        for kind in SessionCopyKind.allCases { controller.copySession(kind) }
+        controller.listenOrStop()
+        _ = await waitUntil(20) { !controller.engine.listening && !controller.stopping }
+        controller.newSession()
+        for kind in SessionCopyKind.allCases { controller.copySession(kind) }
+        _ = controller.exportData(.markdown); _ = controller.exportData(.json); _ = controller.exportData(.text)
+        check("Copy and export on live and empty sessions", true, "no crash")
+
+        mark("models sheet")
+        // 7. Models sheet open and closed during a session.
+        controller.listenOrStop()
+        _ = await waitUntil(10) { controller.engine.listening }
+        controller.showModels = true
+        await sleep(2)
+        controller.showModels = false
+        controller.listenOrStop()
+        _ = await waitUntil(20) { !controller.engine.listening && !controller.stopping }
+
+        controller.automationFeed = nil
+        let worst = watchdog.stop()
+        let stallList = watchdog.stalls.map { stall -> String in
+            let at = stall.0.timeIntervalSince(began)
+            let step = marks.last { $0.0 <= at }?.1 ?? "setup"
+            return String(format: "%.0f ms in %@ at %.1f s", stall.1 * 1000, step, at)
+        }
+        // Sheet slide animations run the run loop in a mode that does not service the main
+        // queue, so the watchdog cannot fire during them; the profile shows the main thread idle.
+        let outsideSheet = watchdog.stalls.filter { stall in
+            let at = stall.0.timeIntervalSince(began)
+            return (marks.last { $0.0 <= at }?.1 ?? "") != "models sheet"
+        }.map(\.1).max() ?? 0
+        _ = worst
+        check("Main thread responsive through the stress run", outsideSheet < 0.25,
+              String(format: "worst stall outside sheet transitions %.0f ms; all: ", outsideSheet * 1000) + stallList.joined(separator: "; "))
+        check("App still alive", true, String(format: "resident %.0f MB", residentMB()))
+    }
+
+    /// Ten minutes of speech (the PRD's endurance fixture): memory stays flat and
+    /// the main thread stays responsive the whole time.
+    private static func enduranceCheck(_ controller: SessionController, english: URL, thai: URL) async {
+        let minutes = Double(ProcessInfo.processInfo.environment["LT_ENDURANCE_MINUTES"] ?? "10") ?? 10
+        // One long recording: the English and Thai fixtures alternated with short pauses.
+        let en = (try? FileCapture.read(english)) ?? []
+        let th = (try? FileCapture.read(thai)) ?? []
+        let gap = [Float](repeating: 0, count: 16_000)
+        var long: [Float] = []
+        while Double(long.count) / 16_000 < minutes * 60 {
+            long += en + gap + th + gap
+        }
+        let url = folder.appendingPathComponent("endurance.wav")
+        if let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false),
+           let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(long.count)),
+           let file = try? AVAudioFile(forWriting: url, settings: format.settings) {
+            buffer.frameLength = AVAudioFrameCount(long.count)
+            long.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: long.count) }
+            try? file.write(from: buffer)
+        }
+        controller.setDirection(.englishToThai)
+        _ = await waitUntil(120) { if case .ready = controller.speechStatus { return true }; return false }
+        controller.automationFeed = url
+        let watchdog = MainThreadWatchdog()
+        watchdog.start()
+        controller.listenOrStop()
+        _ = await waitUntil(10) { controller.engine.listening }
+        var samples: [(Double, Double)] = []
+        let start = Date()
+        while Date().timeIntervalSince(start) < minutes * 60 + 5 {
+            await sleep(30)
+            samples.append((Date().timeIntervalSince(start) / 60, residentMB()))
+            print(String(format: "AUTOMATION endurance %.1f min resident %.0f MB turns %d", samples.last!.0, samples.last!.1, controller.engine.turns.count))
+            fflush(stdout)
+        }
+        controller.listenOrStop()
+        _ = await waitUntil(60) { !controller.engine.listening && !controller.stopping }
+        let worst = watchdog.stop()
+        controller.automationFeed = nil
+        let early = samples.dropFirst(2).prefix(2).map(\.1)
+        let late = samples.suffix(2).map(\.1)
+        let growth = (late.reduce(0, +) / Double(max(late.count, 1))) - (early.reduce(0, +) / Double(max(early.count, 1)))
+        check("Endurance: session ran the whole time", samples.count >= Int(minutes * 2), "\(samples.count) samples, \(controller.engine.turns.count) turns")
+        check("Endurance: memory stays flat", growth < 150, String(format: "growth %.0f MB after warm-up; samples %@", growth, samples.map { String(format: "%.0f", $0.1) }.joined(separator: ",")))
+        check("Endurance: main thread responsive", worst < 0.25, String(format: "worst stall %.0f ms", worst * 1000))
+        let translated = controller.engine.turns.filter { !$0.translationCommitted.isEmpty }.count
+        check("Endurance: turns keep translating", translated >= controller.engine.turns.count / 2, "\(translated) of \(controller.engine.turns.count) turns translated")
+    }
+
     /// The design's shortcuts, sent as real key events through the app's menu bar:
     /// ⌥⌘1–4 copy the session, ⇧⌘K opens the floating captions above other windows.
     private static func keyboardCheck(_ controller: SessionController) async {
@@ -322,6 +571,16 @@ enum AutomationRunner {
         let stamped = NSPasteboard.general.string(forType: .string) ?? ""
         check("Include → Timestamps adds times", stamped.contains("Sarah · 10:02"), String(stamped.prefix(80)))
         controller.copyOptions.timestamps = false
+
+        NSPasteboard.general.clearContents()
+        let markdownHandled = press("c", [.command, .option, .shift])
+        await sleep(0.3)
+        let markdown = NSPasteboard.general.string(forType: .string) ?? ""
+        check("⌥⇧⌘C copies the session as Markdown", markdownHandled && markdown.hasPrefix("# ") && markdown.contains("\n## "), String(markdown.prefix(120)))
+        let exported = String(decoding: controller.exportData(.markdown), as: UTF8.self)
+        let format = SessionController.ExportFormat.markdown
+        check("Export → Markdown writes a .md file", exported == markdown && format.fileExtension == "md" && format.contentType.preferredFilenameExtension == "md",
+              "\(format.contentType.identifier), .\(format.contentType.preferredFilenameExtension ?? "?")")
 
         let opened = press("k", [.command, .shift])
         await sleep(1.5)

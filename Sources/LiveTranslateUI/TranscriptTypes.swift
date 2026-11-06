@@ -43,8 +43,16 @@ struct DisplayTurn: Identifiable, Equatable {
     var translationText: String { translation + translationProvisional }
 }
 
+extension UTType {
+    /// Markdown, so a saved export is a real .md file rather than .md.txt.
+    static let markdownText = UTType("net.daringfireball.markdown")
+        ?? UTType(filenameExtension: "md", conformingTo: .plainText)
+        ?? .plainText
+}
+
 struct ExportFile: FileDocument {
-    static var readableContentTypes: [UTType] { [.json, .plainText, UTType(filenameExtension: "md") ?? .plainText] }
+    static var readableContentTypes: [UTType] { [.json, .plainText, .markdownText] }
+    static var writableContentTypes: [UTType] { [.markdownText, .plainText, .json] }
     var data: Data
 
     init(data: Data) { self.data = data }

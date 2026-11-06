@@ -8,7 +8,12 @@ enum MacTranslationSpike {
 }
 
 enum OnDevicePaths {
-    static func repoRoot() -> URL? {
+    /// Looked up once: it is consulted on every direction change.
+    private static let cachedRoot: URL? = findRepoRoot()
+
+    static func repoRoot() -> URL? { cachedRoot }
+
+    private static func findRepoRoot() -> URL? {
         var candidates = [URL(fileURLWithPath: FileManager.default.currentDirectoryPath)]
         if let env = ProcessInfo.processInfo.environment["LIVE_TRANSLATE_ROOT"], !env.isEmpty {
             candidates.insert(URL(fileURLWithPath: env), at: 0)
@@ -254,6 +259,35 @@ final class SherpaStreamingDecoder: PartialDecoding, LiveSpeechDecoder {
     }
 }
 
+/// A helper process's stderr, kept so a crash can be diagnosed. Text only, capped at
+/// 256 KB, in Application Support/LiveTranslate/logs. Never audio or transcripts.
+final class HelperLog: @unchecked Sendable {
+    private let url: URL
+    private let lock = NSLock()
+
+    init(name: String) {
+        let folder = AppStorageRoot.url().appendingPathComponent("logs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        url = folder.appendingPathComponent("\(name).log")
+    }
+
+    func append(_ data: Data) {
+        guard !data.isEmpty else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        if let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue, size > 262_144 {
+            try? FileManager.default.removeItem(at: url)
+        }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        } else {
+            try? data.write(to: url)
+        }
+    }
+}
+
 /// One local ChindaMT process. It receives the translation prompt, never audio.
 final class ChindaTranslator {
     private let queue = DispatchQueue(label: "live-translate.chinda")
@@ -273,7 +307,7 @@ final class ChindaTranslator {
     }
 
     func start(model: URL? = nil) -> Bool {
-        guard process == nil,
+        guard queue.sync(execute: { process == nil }),
               let python = OnDevicePaths.python(),
               let script = OnDevicePaths.chindaScript(),
               let model = model ?? OnDevicePaths.translatorDirectory() else { return false }
@@ -293,12 +327,16 @@ final class ChindaTranslator {
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+        let log = HelperLog(name: "translator")
         stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-            _ = handle.availableData
+            let data = handle.availableData
+            // At EOF a pipe stays readable; without this the handler spins a core forever.
+            guard !data.isEmpty else { handle.readabilityHandler = nil; return }
+            log.append(data)
         }
         stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            guard !data.isEmpty else { return }
+            guard !data.isEmpty else { handle.readabilityHandler = nil; return }
             self?.queue.async { self?.absorb(data) }
         }
         process.terminationHandler = { [weak self] _ in
@@ -309,8 +347,12 @@ final class ChindaTranslator {
         } catch {
             return false
         }
-        self.process = process
-        input = stdinPipe.fileHandleForWriting
+        // State is owned by `queue`; the readability and termination handlers touch it there too.
+        queue.sync {
+            self.process = process
+            self.input = stdinPipe.fileHandleForWriting
+            self.dead = false
+        }
         return true
     }
 
@@ -341,9 +383,16 @@ final class ChindaTranslator {
             self.process = nil
             self.input = nil
             self.ready = false
+            // A request in flight still gets its answer (empty), so the caller is never
+            // left waiting with translation marked as running.
+            let done = self.waiter
+            let generation = self.pendingGeneration ?? -1
             self.waiter = nil
             self.pendingGeneration = nil
             self.queued = nil
+            if let done {
+                DispatchQueue.main.async { done(generation, "") }
+            }
         }
     }
 

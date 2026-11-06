@@ -33,7 +33,9 @@ struct LiveTranslateApp: App {
 /// Menu bar commands. The window draws only what the design shows; everything else
 /// (export, Notion, audio source, models, captions, layout) lives here with its shortcut.
 struct SessionCommands: Commands {
-    @ObservedObject var controller: SessionController
+    /// Not observed: an observed controller would rebuild the whole menu bar on every
+    /// transcript update. Titles are fixed and each item reads the state when chosen.
+    let controller: SessionController
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
@@ -47,6 +49,8 @@ struct SessionCommands: Commands {
                     Button("\(format.title)…") { controller.exportRequest = format }
                 }
             }
+            Button("Copy as Markdown") { controller.copyMarkdown() }
+                .keyboardShortcut("c", modifiers: [.command, .option, .shift])
             Button("Export to Notion…") { controller.exportToNotion() }
         }
         CommandGroup(after: .pasteboard) {
@@ -61,36 +65,34 @@ struct SessionCommands: Commands {
                 .keyboardShortcut("4", modifiers: [.command, .option])
         }
         CommandMenu("Session") {
-            Button(controller.engine.listening ? "Stop" : "Listen") { controller.listenOrStop() }
+            Button("Listen / Stop") { controller.listenOrStop() }
                 .keyboardShortcut(.return, modifiers: .command)
-            Button(controller.paused ? "Resume" : "Pause") { controller.pauseOrResume() }
+            Button("Pause / Resume") { controller.pauseOrResume() }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
-                .disabled(!controller.engine.listening)
             Button("Swap Languages") { controller.swapDirection() }
-                .disabled(controller.engine.listening)
-            Picker("Listen To", selection: Binding(get: { controller.audioSource }, set: { controller.setAudioSource($0) })) {
+            Menu("Listen To") {
                 ForEach(AudioSourceKind.allCases) { source in
-                    Text(source.title).tag(source)
+                    Button(source.title) { controller.setAudioSource(source) }
                 }
             }
             Divider()
             Button("Highlight Current Turn") { controller.highlight() }
                 .keyboardShortcut("h", modifiers: [.command, .shift])
-            Button(controller.engine.speakers.chipsVisible ? "Hide Speakers" : "Show Speakers") { controller.toggleSpeakers() }
+            Button("Show or Hide Speakers") { controller.toggleSpeakers() }
             Divider()
             Button("Manage Languages…") { controller.showModels = true }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
         }
         CommandGroup(before: .sidebar) {
-            Button(controller.showSessions ? "Hide Sessions" : "Show Sessions") { controller.showSessions.toggle() }
+            Button("Show or Hide Sessions") { controller.showSessions.toggle() }
                 .keyboardShortcut("s", modifiers: [.command, .control])
-            Button(controller.showSummary ? "Hide Summary" : "Show Summary") { controller.showSummary.toggle() }
+            Button("Show or Hide Summary") { controller.showSummary.toggle() }
                 .keyboardShortcut("i", modifiers: [.command, .option])
             Button("Floating Captions") { openWindow(id: CaptionsWindow.id) }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
-            Picker("Layout", selection: $controller.layout) {
+            Menu("Layout") {
                 ForEach(TranscriptLayout.allCases) { layout in
-                    Text(layout.title).tag(layout)
+                    Button(layout.title) { controller.layout = layout }
                 }
             }
             Menu("Text Size") {

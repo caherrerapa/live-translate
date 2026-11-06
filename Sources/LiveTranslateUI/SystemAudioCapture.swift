@@ -7,10 +7,13 @@ import ScreenCaptureKit
 /// the video side is a 2×2 stream at one frame a second that is never read.
 /// This app's own sound is excluded. Samples stay in memory like the microphone's.
 final class SystemAudioCapture: NSObject, AudioCapturing, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
-    private var stream: SCStream?
     private let sampleQueue = DispatchQueue(label: "live-translate.system-audio", qos: .userInitiated)
+    /// Guards the callbacks, the stream, and `stopped`: written on main, read on the sample queue.
+    private let lock = NSLock()
+    private var stream: SCStream?
     private var onSamples: (([Float]) -> Void)?
     private var onError: ((Error) -> Void)?
+    private var stopped = false
     private var converter: AVAudioConverter?
     private var converterInput: AVAudioFormat?
     private let target = AVAudioFormat(
@@ -21,8 +24,11 @@ final class SystemAudioCapture: NSObject, AudioCapturing, SCStreamOutput, SCStre
     )
 
     func start(onSamples: @escaping ([Float]) -> Void, onError: @escaping (Error) -> Void) throws {
+        lock.lock()
         self.onSamples = onSamples
         self.onError = onError
+        stopped = false
+        lock.unlock()
         Task {
             do {
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -40,22 +46,37 @@ final class SystemAudioCapture: NSObject, AudioCapturing, SCStreamOutput, SCStre
                 let stream = SCStream(filter: filter, configuration: config, delegate: self)
                 try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
                 try await stream.startCapture()
-                self.stream = stream
+                lock.lock()
+                let stoppedMeanwhile = stopped
+                if !stoppedMeanwhile { self.stream = stream }
+                lock.unlock()
+                // Stop came while the stream was starting: end it instead of capturing forever.
+                if stoppedMeanwhile { try? await stream.stopCapture() }
             } catch {
                 NSLog("system-audio start failed: %@", String(describing: error))
-                onError(error)
+                lock.lock()
+                let report = stopped ? nil : self.onError
+                lock.unlock()
+                report?(error)
             }
         }
     }
 
     func stop() {
+        lock.lock()
         let stream = self.stream
         self.stream = nil
         onSamples = nil
+        onError = nil
+        stopped = true
+        lock.unlock()
         Task { try? await stream?.stopCapture() }
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        lock.lock()
+        let onSamples = self.onSamples
+        lock.unlock()
         guard type == .audio, sampleBuffer.isValid, let onSamples, let target,
               let description = sampleBuffer.formatDescription else { return }
         let format = AVAudioFormat(cmAudioFormatDescription: description)
@@ -80,7 +101,10 @@ final class SystemAudioCapture: NSObject, AudioCapturing, SCStreamOutput, SCStre
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         NSLog("system-audio stopped with error: %@", String(describing: error))
-        onError?(error)
+        lock.lock()
+        let report = stopped ? nil : onError
+        lock.unlock()
+        report?(error)
     }
 }
 #endif

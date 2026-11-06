@@ -40,6 +40,9 @@ protocol AudioCapturing: AnyObject {
 final class MicrophoneCapture: AudioCapturing {
     private let engine = AVAudioEngine()
     private var started = false
+    private var onSamples: (([Float]) -> Void)?
+    private var onError: ((Error) -> Void)?
+    private var configurationObserver: NSObjectProtocol?
 
     func start(onSamples: @escaping ([Float]) -> Void, onError: @escaping (Error) -> Void) throws {
         #if os(iOS)
@@ -47,8 +50,52 @@ final class MicrophoneCapture: AudioCapturing {
         try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker])
         try session.setActive(true)
         #endif
+        self.onSamples = onSamples
+        self.onError = onError
+        try installAndStart()
+        started = true
+        // Plugging in headphones or switching the input device stops the engine and changes
+        // the input format. Without a restart the session would go silent with no error.
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            self?.restartAfterConfigurationChange()
+        }
+    }
+
+    func stop() {
+        guard started else { return }
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+        }
+        configurationObserver = nil
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        started = false
+        onSamples = nil
+        onError = nil
+    }
+
+    private func restartAfterConfigurationChange() {
+        guard started else { return }
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        do {
+            try installAndStart()
+        } catch {
+            onError?(error)
+        }
+    }
+
+    private func installAndStart() throws {
+        guard let onSamples else { return }
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            throw CaptureError.formatUnavailable
+        }
         guard let target = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: Double(AudioBuffer.captureRate),
@@ -67,14 +114,6 @@ final class MicrophoneCapture: AudioCapturing {
         }
         engine.prepare()
         try engine.start()
-        started = true
-    }
-
-    func stop() {
-        guard started else { return }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        started = false
     }
 
     static func convert(

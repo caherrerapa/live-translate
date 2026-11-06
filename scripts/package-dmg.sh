@@ -30,9 +30,29 @@ rsync -a --exclude '__pycache__' --exclude 'test/' --exclude 'idlelib/' --exclud
 rsync -a --exclude '__pycache__' "$VENV/lib/$PYVER/site-packages/" "$RUNTIME/lib/$PYVER/site-packages/"
 "$RUNTIME/bin/python3" -I -c "import mlx_lm, mlx.core; print('mlx', mlx.core.__version__)"
 
-echo "==> Sign (ad hoc)"
-codesign --force --deep --sign - "$APP"
-codesign --verify --deep --strict "$APP"
+# Gatekeeper accepts a downloaded app only when it is signed with a Developer ID
+# Application certificate and notarized. Without one, the DMG is ad-hoc signed and
+# macOS warns that it may be dangerous.
+IDENTITY=${DEVELOPER_ID:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)}
+NOTARY_PROFILE=${NOTARY_PROFILE:-live-translate-notary}
+ENTITLEMENTS="$ROOT/scripts/LiveTranslate.entitlements"
+
+if [[ -n "$IDENTITY" ]]; then
+  echo "==> Sign with $IDENTITY (hardened runtime)"
+  # Inside out: every Mach-O in the bundled runtime and frameworks, then the app.
+  find "$APP/Contents" -type f \( -name "*.so" -o -name "*.dylib" -o -perm -111 \) -print0 |
+    while IFS= read -r -d '' file; do
+      if file "$file" | grep -q "Mach-O"; then
+        codesign --force --timestamp --options runtime --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$file"
+      fi
+    done
+  codesign --force --timestamp --options runtime --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$APP"
+  codesign --verify --deep --strict --verbose=2 "$APP"
+else
+  echo "==> Sign (ad hoc): no Developer ID Application certificate, so Gatekeeper will warn"
+  codesign --force --deep --sign - "$APP"
+  codesign --verify --deep --strict "$APP"
+fi
 
 echo "==> DMG"
 mkdir -p "$OUT"
@@ -43,5 +63,18 @@ DMG="$OUT/LiveTranslate-$VERSION.dmg"
 rm -f "$DMG"
 hdiutil create -volname "Live Translate $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
 rm -rf "$STAGE"
+
+if [[ -n "$IDENTITY" ]]; then
+  codesign --force --timestamp --sign "$IDENTITY" "$DMG"
+  if xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
+    echo "==> Notarize"
+    xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+    xcrun stapler staple "$DMG"
+    spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+  else
+    echo "==> Not notarized: create the profile once with"
+    echo "    xcrun notarytool store-credentials $NOTARY_PROFILE --apple-id <id> --team-id <team>"
+  fi
+fi
 shasum -a 256 "$DMG"
 du -h "$DMG"

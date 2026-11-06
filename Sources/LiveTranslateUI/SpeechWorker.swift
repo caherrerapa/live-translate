@@ -79,6 +79,8 @@ final class SpeechWorker: @unchecked Sendable {
     func start(emit: @escaping (Update) -> Void) {
         queue.async {
             self.active?.reset()
+            // Speaker numbering and the diarizer's history start fresh with each session.
+            self.labeler?.reset()
             self.lastText = ""
             self.lastRaw = nil
             self.lastEmit = 0
@@ -114,9 +116,32 @@ final class SpeechWorker: @unchecked Sendable {
     }
 
     /// Called from the audio tap thread.
+    private let pendingLock = NSLock()
+    private var pending: [Float] = []
+    private var drainScheduled = false
+    /// Thirty seconds of audio. If decoding falls behind for that long, the oldest audio is dropped
+    /// rather than growing memory and latency without limit.
+    static let backlogLimit = 16_000 * 30
+
+    /// Called from the audio tap thread. Buffers are merged into one pending block, so a slow
+    /// decoder never builds an unbounded queue of work items behind it.
     func push(_ samples: [Float]) {
+        pendingLock.lock()
+        pending.append(contentsOf: samples)
+        if pending.count > Self.backlogLimit {
+            pending.removeFirst(pending.count - Self.backlogLimit)
+        }
+        let schedule = !drainScheduled
+        drainScheduled = true
+        pendingLock.unlock()
+        guard schedule else { return }
         queue.async {
-            guard self.running, let decoder = self.active, let emit = self.emit else { return }
+            self.pendingLock.lock()
+            let samples = self.pending
+            self.pending.removeAll(keepingCapacity: true)
+            self.drainScheduled = false
+            self.pendingLock.unlock()
+            guard !samples.isEmpty, self.running, let decoder = self.active, let emit = self.emit else { return }
             let step = decoder.decode(samples)
             let raw = self.labeler?.speakerRaw(pcm: samples)
             let now = ProcessInfo.processInfo.systemUptime
@@ -139,6 +164,8 @@ final class CoreMLNemotronDecoder: LiveSpeechDecoder {
     private let format: AVAudioFormat
     private var heardSpeech = false
     private var silentSamples = 0
+    /// Returned if a Core ML call times out, so the caption holds instead of blanking.
+    private var lastPartial = ""
 
     /// RMS above this is speech. About -42 dBFS.
     static let speechRMS: Float = 0.008
@@ -153,7 +180,7 @@ final class CoreMLNemotronDecoder: LiveSpeechDecoder {
             interleaved: false
         ) else { return nil }
         let manager = StreamingNemotronAsrManager(requestedChunkSize: .ms1120)
-        let loaded: Bool = Self.blocking {
+        let loaded: Bool = Self.blocking(timeout: 180, fallback: false) {
             do {
                 try await manager.loadModels(from: directory)
                 return true
@@ -177,10 +204,11 @@ final class CoreMLNemotronDecoder: LiveSpeechDecoder {
             channel[0].update(from: source.baseAddress!, count: samples.count)
         }
         let manager = self.manager
-        let text: String = Self.blocking {
+        let text: String = Self.blocking(fallback: lastPartial) {
             _ = try? await manager.process(audioBuffer: buffer)
             return await manager.getPartialTranscript()
         }
+        lastPartial = text
         var energy: Float = 0
         for sample in samples { energy += sample * sample }
         let rms = (energy / Float(samples.count)).squareRoot()
@@ -192,13 +220,14 @@ final class CoreMLNemotronDecoder: LiveSpeechDecoder {
         }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if heardSpeech, silentSamples >= Self.endpointSamples, !trimmed.isEmpty {
-            let final: String = Self.blocking {
+            let final: String = Self.blocking(fallback: text) {
                 let finished = (try? await manager.finish()) ?? text
                 await manager.reset()
                 return finished
             }
             heardSpeech = false
             silentSamples = 0
+            lastPartial = ""
             return StreamStep(text: final.trimmingCharacters(in: .whitespacesAndNewlines), endpoint: true)
         }
         return StreamStep(text: trimmed, endpoint: false)
@@ -207,30 +236,37 @@ final class CoreMLNemotronDecoder: LiveSpeechDecoder {
     func reset() {
         heardSpeech = false
         silentSamples = 0
+        lastPartial = ""
         let manager = self.manager
-        Self.blocking { await manager.reset() }
+        Self.blocking(fallback: ()) { await manager.reset() }
     }
 
     func close() {
         let manager = self.manager
-        Self.blocking { await manager.cleanup() }
+        Self.blocking(fallback: ()) { await manager.cleanup() }
     }
 
     /// The worker queue is a plain GCD thread, never the main thread, so it may
     /// wait for the actor. The actor runs on the Swift concurrency pool.
+    /// A stuck Core ML call must not freeze the speech queue (and with it Stop):
+    /// after `timeout` the caller gets `fallback` and moves on.
     @discardableResult
-    private static func blocking<T>(_ operation: @escaping @Sendable () async -> T) -> T {
+    private static func blocking<T>(timeout: TimeInterval = 15, fallback: T, _ operation: @escaping @Sendable () async -> T) -> T {
         let semaphore = DispatchSemaphore(value: 0)
         let box = ResultBox<T>()
         Task.detached(priority: .userInitiated) {
-            box.value = await operation()
+            let value = await operation()
+            box.set(value)
             semaphore.signal()
         }
-        semaphore.wait()
-        return box.value!
+        guard semaphore.wait(timeout: .now() + timeout) == .success else { return fallback }
+        return box.get() ?? fallback
     }
 
     private final class ResultBox<T>: @unchecked Sendable {
-        var value: T?
+        private let lock = NSLock()
+        private var value: T?
+        func set(_ newValue: T) { lock.lock(); value = newValue; lock.unlock() }
+        func get() -> T? { lock.lock(); defer { lock.unlock() }; return value }
     }
 }

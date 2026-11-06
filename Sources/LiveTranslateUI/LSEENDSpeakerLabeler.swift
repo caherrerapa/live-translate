@@ -33,12 +33,21 @@ final class LSEENDSpeakerLabeler: SpeakerLabeling {
             try diarizer.addAudio(pcm, sourceSampleRate: 16_000)
             if let update = try diarizer.process(), let raw = update.finalizedSegments.last?.speakerIndex {
                 lastRaw = raw
-                rawTrace.append(raw)
+                // Kept for the probe tool only; bounded so a long session can't grow it.
+                if rawTrace.count < 10_000 { rawTrace.append(raw) }
             }
         } catch {
             failure = String(describing: error)
             return lastRaw
         }
         return lastRaw
+    }
+
+    /// Forgets the previous session's voices so slot 0 is again the first speaker.
+    func reset() {
+        lastRaw = nil
+        rawTrace.removeAll()
+        guard ready else { return }
+        diarizer.reset()
     }
 }

@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import UniformTypeIdentifiers
 #if os(macOS)
 import AppKit
 #else
@@ -75,6 +76,8 @@ final class SessionController: ObservableObject {
     /// Held while listening so App Nap cannot throttle the transcript when the window is in the background.
     private var listenActivity: NSObjectProtocol?
     private var notesPrewarmed = false
+    /// Counts Listen presses that started capture, so a late Stop cannot end a newer session.
+    private var listenSession = 0
     @Published private(set) var stopping = false
     private let worker = SpeechWorker()
     private let storage: URL
@@ -204,6 +207,8 @@ final class SessionController: ObservableObject {
     // MARK: Listen
 
     func listenOrStop() {
+        // A Stop is still finishing the last words: extra presses wait for it.
+        if stopping { return }
         if listenWhenReady && !engine.listening {
             stopListening()
             return
@@ -212,13 +217,16 @@ final class SessionController: ObservableObject {
             // Stop hearing now, but let the words already captured finish before the turn commits.
             capture.stop()
             stopping = true
+            let session = listenSession
             worker.drain { [weak self] in
-                self?.stopping = false
-                self?.stopListening()
+                guard let self else { return }
+                self.stopping = false
+                // Only the session this Stop belonged to; never one started since.
+                guard session == self.listenSession else { return }
+                self.stopListening()
             }
             return
         }
-        if stopping { return }
         guard engine.listenEnabled, engine.packInstalled else { return }
         if preparingListen { return }
         #if DEBUG
@@ -309,6 +317,7 @@ final class SessionController: ObservableObject {
     /// The worker keeps it resident, so Listen starts at once and a swap back is free.
     func prepareSpeech() {
         guard let plan = speechPlan() else {
+            listenWhenReady = false
             let language = engine.direction.source
             speechStatus = .failed("No \(language.title) speech model yet. Open Manage languages → \(language.title) streaming.")
             return
@@ -408,6 +417,7 @@ final class SessionController: ObservableObject {
     }
 
     private func startListening() {
+        listenSession += 1
         mutate { $0.setListening(true) }
         guard engine.listening, engine.packInstalled else { return }
         library.listening = true
@@ -471,9 +481,19 @@ final class SessionController: ObservableObject {
         capture.stop()
         worker.stop()
         library.listening = false
+        if let started = listenStarted {
+            current.duration += Date().timeIntervalSince(started) - pausedTotal - (pauseStarted.map { Date().timeIntervalSince($0) } ?? 0)
+        }
         listenStarted = nil
         paused = false
+        pauseStarted = nil
+        pausedTotal = 0
         Task { await installer.setListening(false) }
+        // Whatever was heard before the failure is kept: the open turn commits and the session saves.
+        if engine.listening {
+            mutate { $0.stop(at: Date()) }
+            persistCurrent()
+        }
         if audioSource == .systemAudio {
             mutate { $0.setListening(false) }
             show("System audio needs Screen Recording access in System Settings.")
@@ -670,6 +690,14 @@ final class SessionController: ObservableObject {
             case .json: return "JSON"
             }
         }
+        var contentType: UTType {
+            switch self {
+            case .markdown: return .markdownText
+            case .text: return .plainText
+            case .json: return .json
+            }
+        }
+
         var fileExtension: String {
             switch self {
             case .markdown: return "md"
@@ -686,6 +714,12 @@ final class SessionController: ObservableObject {
         case .text: return Data(record.plainText().utf8)
         case .json: return (try? record.jsonData()) ?? Data()
         }
+    }
+
+    /// The whole session — note, your notes, and transcript — as Markdown on the pasteboard.
+    func copyMarkdown() {
+        setPasteboard(displayedRecord.markdown())
+        show("Session copied as Markdown")
     }
 
     func copySummary() {
@@ -941,6 +975,10 @@ final class SessionController: ObservableObject {
                 }
                 do {
                     try probe.run()
+                    // A graph that hangs instead of exiting would leave the install spinning forever.
+                    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 120) {
+                        if probe.isRunning { probe.terminate() }
+                    }
                 } catch {
                     continuation.resume(returning: "Could not start the model check.")
                 }
@@ -1009,6 +1047,9 @@ final class SessionController: ObservableObject {
         if engine.listening { stopListening() }
         worker.evictAll()
         activeSpeechKey = nil
+        // A model load in flight would otherwise report ready for a graph evictAll just closed.
+        speechGeneration += 1
+        speechStatus = .idle
         await installer.suppressAdopt(packID: pack.id)
         try? await installer.delete(packID: pack.id)
         await refreshInstall()
@@ -1035,7 +1076,8 @@ final class SessionController: ObservableObject {
 
     /// Starts the MLX translator early so its weights are on the GPU before the first turn.
     /// A direction that needs another model restarts the process with that model.
-    private func prepareTranslator() {
+    /// `replacing` is set when a request in flight needs a fresh process now.
+    private func prepareTranslator(replacing: Bool = false) {
         guard let model = translatorModel else {
             translator?.stop()
             translator = nil
@@ -1043,8 +1085,9 @@ final class SessionController: ObservableObject {
             translatorStatus = .failed("No translator for \(direction.source.title) → \(direction.target.title). Download a multilingual model in Manage languages → Translation.")
             return
         }
-        if let translator, translator.modelDirectory == model { return }
-        guard !translationRunning else { return }
+        if let translator, translator.modelDirectory == model, translator.isRunning { return }
+        // Swapping models waits for the turn being translated; a dead process does not.
+        guard replacing || !translationRunning else { return }
         translator?.stop()
         translator = nil
         let chinda = ChindaTranslator()
@@ -1056,15 +1099,34 @@ final class SessionController: ObservableObject {
         }
     }
 
-    private func runTranslation(_ request: TranslationRequest) {
-        if translator == nil { prepareTranslator() }
+    private func runTranslation(_ request: TranslationRequest, attempt: Int = 0) {
+        // A translator whose process died (killed, crashed, out of memory) is replaced,
+        // so one lost process cannot leave every later turn untranslated.
+        if let current = translator, !current.isRunning {
+            current.stop()
+            translator = nil
+            translatorStatus = .loading("Restarting the translator")
+        }
+        if translator == nil { prepareTranslator(replacing: true) }
         guard let translator else {
             translationRunning = false
             mutate { _ = $0.deliverTranslation(generation: request.generation, text: "", at: Date()) }
             return
         }
-        translator.translate(generation: request.generation, prompt: request.prompt) { [weak self] generation, text in
-            self?.finishTranslation(generation: generation, text: text)
+        let session = current.id
+        translator.translate(generation: request.generation, prompt: request.prompt) { [weak self, weak translator] generation, text in
+            guard let self else { return }
+            // An answer for a session that has since been replaced is not this session's turn.
+            guard session == self.current.id else {
+                self.translationRunning = false
+                return
+            }
+            // An empty answer from a process that just died is a failure, not a translation: retry on a new process.
+            if text.isEmpty, translator?.isRunning != true, attempt < 2 {
+                self.runTranslation(request, attempt: attempt + 1)
+                return
+            }
+            self.finishTranslation(generation: generation, text: text)
         }
     }
 
@@ -1089,7 +1151,11 @@ final class SessionController: ObservableObject {
     /// Translates note lines one at a time, only while the live translator is idle.
     private func translateNextNoteText() {
         guard !translationRunning, engine.pendingTranslation == nil, !noteTranslationQueue.isEmpty else { return }
-        if translator == nil { prepareTranslator() }
+        if let current = translator, !current.isRunning {
+            current.stop()
+            self.translator = nil
+        }
+        if translator == nil { prepareTranslator(replacing: true) }
         guard let translator else { return }
         let text = noteTranslationQueue.removeFirst()
         let direction = TranslationDirection(source: noteLanguage, target: summaryLanguage ?? noteLanguage)
@@ -1111,10 +1177,12 @@ final class SessionController: ObservableObject {
         if engine.listening { stopListening() } else { persistCurrent() }
         capture.stop()
         worker.stop()
-        worker.evictAll()
+        // The speech graphs are not closed here: the process is exiting, and closing them on
+        // the speech queue raced with exit tearing down ONNX Runtime (std::terminate in
+        // ReleaseEnv). The system reclaims their memory with the process.
         translator?.stop()
         translator = nil
-        notesClient.stop()
+        notesClient.terminateNow()
     }
     #endif
 
@@ -1149,9 +1217,13 @@ final class SessionController: ObservableObject {
 
     private func runNotesPass(_ input: NotesInput) {
         let model = engine.notes.model
+        // A pass belongs to the session that started it; a draft that lands after New Session
+        // must not be written into the next session's note.
+        let session = current.id
         notesRunning = true
         #if DEBUG
         notesActivity.append((Date(), nil))
+        if notesActivity.count > 50 { notesActivity.removeFirst(notesActivity.count - 50) }
         #endif
         notesQueue.async { [weak self] in
             let draft = model(input)
@@ -1161,7 +1233,10 @@ final class SessionController: ObservableObject {
                 #if DEBUG
                 if let last = self.notesActivity.indices.last { self.notesActivity[last].end = Date() }
                 #endif
+                guard session == self.current.id else { return }
                 self.mutate { $0.notes.finishDeferredPass(draft, now: Date()) }
+                // The last pass lands after Stop has already saved; save the finished note too.
+                if !self.engine.listening { self.persistCurrent() }
             }
         }
     }
@@ -1183,8 +1258,13 @@ final class SessionController: ObservableObject {
 
     #if os(macOS)
     private func adoptProducedFiles(packID: String) async {
-        for file in pinnedFiles(packID: packID) {
-            guard let source = OnDevicePaths.producedSpeechFile(modelID: file.modelID, name: file.name) else { continue }
+        let files = pinnedFiles(packID: packID)
+        // File-system checks run off the main thread; on a busy disk they take a while.
+        let sources = await Task.detached(priority: .userInitiated) {
+            files.map { OnDevicePaths.producedSpeechFile(modelID: $0.modelID, name: $0.name) }
+        }.value
+        for (file, source) in zip(files, sources) {
+            guard let source else { continue }
             await installer.adoptIfMissing(packID: packID, file: file, source: source)
         }
     }
