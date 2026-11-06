@@ -614,10 +614,11 @@ enum NotionCheckCLI {
             let blocks = NotionExport.blocks(for: record)
             print("blocks \(blocks.count) (batched as \(Int((Double(blocks.count) / 100).rounded(.up))) requests)")
             print("page id from link:", NotionExport.pageID(from: "https://www.notion.so/Team-Notes-1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d") ?? "nil")
+            let token = ProcessInfo.processInfo.environment["LT_NOTION_TOKEN"] ?? "ntn_invalid_check_token"
             do {
-                _ = try await NotionExport.export(record, settings: .init(token: "ntn_invalid_check_token", parentPageID: "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d"))
-                print("unexpected success")
-                exit(1)
+                let url = try await NotionExport.export(record, settings: .init(token: token, parentPageID: "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d"))
+                print("exported page:", url?.absoluteString ?? "nil")
+                exit(ProcessInfo.processInfo.environment["LT_NOTION_API"] != nil ? 0 : 1)
             } catch {
                 print("notion error:", error.localizedDescription)
                 exit(error.localizedDescription.contains("401") ? 0 : 1)

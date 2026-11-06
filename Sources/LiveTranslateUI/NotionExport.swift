@@ -85,7 +85,12 @@ enum NotionExport {
     }
 
     private static func call(_ method: String, _ path: String, body: [String: Any], token: String) async throws -> [String: Any] {
-        guard let url = URL(string: "https://api.notion.com/v1/\(path)") else { throw URLError(.badURL) }
+        var base = "https://api.notion.com/v1/"
+        #if DEBUG
+        // Checks run against a local stand-in for Notion's API.
+        if let override = ProcessInfo.processInfo.environment["LT_NOTION_API"], !override.isEmpty { base = override }
+        #endif
+        guard let url = URL(string: base + path) else { throw URLError(.badURL) }
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
