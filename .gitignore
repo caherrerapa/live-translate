@@ -18,3 +18,5 @@ runtime/
 *.gguf
 *.safetensors
 *.dylib
+DerivedData-Release/
+dist/
