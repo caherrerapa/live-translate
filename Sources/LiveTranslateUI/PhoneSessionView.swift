@@ -56,12 +56,18 @@ struct PhoneSessionView: View {
     }
 
     private var topBar: some View {
-        VStack(spacing: 10) {
+        // Landscape has little height: the language pill joins the title row.
+        let wide = arrangement == .sideBySide
+        return VStack(spacing: 10) {
             HStack(spacing: 8) {
                 Text(verbatim: controller.displayedRecord.displayTitle)
                     .font(.system(size: 17, weight: .semibold))
                     .lineLimit(1)
                 Spacer(minLength: 8)
+                if wide {
+                    PhoneLanguagePill(controller: controller)
+                    Spacer(minLength: 8)
+                }
                 PhoneCopyMenu(controller: controller)
                 Button { controller.showModels = true } label: {
                     Image(systemName: "shippingbox")
@@ -71,11 +77,13 @@ struct PhoneSessionView: View {
                 }
                 .accessibilityLabel("Models")
             }
-            PhoneLanguagePill(controller: controller)
+            if !wide {
+                PhoneLanguagePill(controller: controller)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.top, 6)
-        .padding(.bottom, 10)
+        .padding(.bottom, wide ? 6 : 10)
     }
 }
 

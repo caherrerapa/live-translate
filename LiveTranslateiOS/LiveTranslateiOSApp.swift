@@ -48,6 +48,10 @@ struct PhoneRoot: View {
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 controller.loadDemo()
                 controller.phoneShowsNotes = ProcessInfo.processInfo.environment["LT_DEMO"] == "summary"
+                if ProcessInfo.processInfo.environment["LT_ORIENT"] == "landscape",
+                   let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+                    scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight))
+                }
                 return
             }
             #endif
