@@ -1,15 +1,13 @@
 import SwiftUI
 
 struct ContentView: View {
-    private let catalogResult: Result<ModelCatalog, Error> = {
-        Result { try ModelCatalog.loadFromBundle() }
-    }()
+    @ObservedObject var model: AppModel
 
     var body: some View {
-        switch catalogResult {
-        case .success(let catalog):
-            MacRoot(catalog: catalog)
-        case .failure:
+        if let controller = model.controller {
+            MacSessionView(controller: controller)
+                .frame(minWidth: SessionLayout.windowMinWidth, minHeight: SessionLayout.windowMinHeight)
+        } else {
             ContentUnavailableView(
                 "Catalog missing",
                 systemImage: "doc.text",
@@ -17,25 +15,5 @@ struct ContentView: View {
             )
             .frame(minWidth: 960, minHeight: 640)
         }
-    }
-}
-
-struct MacRoot: View {
-    @StateObject private var controller: SessionController
-
-    init(catalog: ModelCatalog) {
-        _controller = StateObject(
-            wrappedValue: SessionController(
-                catalog: catalog,
-                packID: PackPolicy.macPackID,
-                platform: "macos",
-                storage: AppStorageRoot.url()
-            )
-        )
-    }
-
-    var body: some View {
-        SessionScreen(controller: controller, shell: .mac, landscape: false, regularWidth: true)
-            .frame(minWidth: SessionLayout.windowMinWidth, minHeight: SessionLayout.windowMinHeight)
     }
 }

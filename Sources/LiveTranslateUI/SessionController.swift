@@ -29,12 +29,30 @@ final class SessionController: ObservableObject {
     @Published private(set) var notesRunning = false
     @Published private(set) var listenStarted: Date?
     @Published var toast: String?
+    /// History for the sidebar, newest first. The live session is `current`.
+    @Published private(set) var sessions: [SessionRecord] = []
+    @Published private(set) var current: SessionRecord
+    /// A past session being read. Nil shows the live session.
+    @Published var viewingID: UUID?
+    @Published var layout: TranscriptLayout = .sideBySide
+    @Published var audioSource: AudioSourceKind = .microphone
+    @Published private(set) var paused = false
+    @Published var summaryLanguage: SpeechLanguage?
+    @Published private(set) var translatedNoteText: [String: String] = [:]
+    @Published private(set) var exporting = false
+    @Published var notionSetupPresented = false
+    let levels = LevelMeter()
     let catalog: ModelCatalog
     let packID: String
     let platform: String
     let installer: PackInstaller
     let library: ModelLibrary
-    private let capture = MicrophoneCapture()
+    private var capture: AudioCapturing = MicrophoneCapture()
+    private let store: SessionStore
+    private var pausedTotal: TimeInterval = 0
+    private var pauseStarted: Date?
+    private var lastAutosave = Date.distantPast
+    private var noteTranslationQueue: [String] = []
     private let worker = SpeechWorker()
     private let storage: URL
     private var ticker: Task<Void, Never>?
@@ -75,6 +93,10 @@ final class SessionController: ObservableObject {
         }
         #endif
         engine = SessionEngine(catalog: catalog, packID: packID, packInstalled: false, notes: notes)
+        store = SessionStore(storage: storage)
+        sessions = store.loadAll()
+        current = SessionRecord(started: Date(), direction: .thaiToEnglish)
+        copyOptions = Self.loadCopyOptions()
         installer = PackInstaller(root: storage) { url, offset in
             RangeByteSource(url: url, offset: offset)
         }
@@ -180,9 +202,17 @@ final class SessionController: ObservableObject {
         listenWhenReady = false
         capture.stop()
         worker.stop()
+        levels.reset()
+        if let started = listenStarted {
+            current.duration += Date().timeIntervalSince(started) - pausedTotal - (pauseStarted.map { Date().timeIntervalSince($0) } ?? 0)
+        }
         listenStarted = nil
+        paused = false
+        pauseStarted = nil
+        pausedTotal = 0
         guard engine.listening else { return }
         mutate { $0.stop(at: Date()) }
+        persistCurrent()
         library.listening = false
         Task { await installer.setListening(false) }
         #if os(macOS)
@@ -334,20 +364,100 @@ final class SessionController: ObservableObject {
                 self?.apply(update)
             }
         }
-        let worker = self.worker
-        do {
-            // Samples go from the audio thread to the speech queue. The main thread never decodes.
-            try capture.start { samples in
-                worker.push(samples)
-            }
-            listenStarted = Date()
-        } catch {
-            capture.stop()
-            worker.stop()
-            library.listening = false
-            mutate { $0.setListening(false); $0.microphoneDenied = true }
-            Task { await installer.setListening(false) }
+        if current.turns.isEmpty && engine.turns.isEmpty {
+            current.started = Date()
+            current.direction = engine.direction
         }
+        viewingID = nil
+        do {
+            try startCapture()
+            listenStarted = Date()
+            paused = false
+            pausedTotal = 0
+        } catch {
+            captureFailed(error)
+        }
+    }
+
+    /// Samples go from the audio thread to the speech queue and the level meter.
+    /// The main thread never decodes.
+    private func startCapture() throws {
+        #if os(macOS)
+        capture = audioSource == .systemAudio ? SystemAudioCapture() : MicrophoneCapture()
+        #else
+        capture = MicrophoneCapture()
+        #endif
+        let worker = self.worker
+        let meter = levels
+        let tap = LevelTap { level in
+            DispatchQueue.main.async { MainActor.assumeIsolated { meter.push(level) } }
+        }
+        try capture.start(onSamples: { samples in
+            worker.push(samples)
+            tap.feed(samples)
+        }, onError: { [weak self] error in
+            DispatchQueue.main.async { self?.captureFailed(error) }
+        })
+    }
+
+    private func captureFailed(_ error: Error) {
+        capture.stop()
+        worker.stop()
+        library.listening = false
+        listenStarted = nil
+        paused = false
+        Task { await installer.setListening(false) }
+        if audioSource == .systemAudio {
+            mutate { $0.setListening(false) }
+            show("System audio needs Screen Recording access in System Settings.")
+            #if os(macOS)
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+                NSWorkspace.shared.open(url)
+            }
+            #endif
+        } else {
+            mutate { $0.setListening(false); $0.microphoneDenied = true }
+        }
+    }
+
+    /// Pause keeps the session open and stops hearing. Resume continues the same session.
+    func pauseOrResume() {
+        guard engine.listening else { return }
+        if paused {
+            do {
+                try startCapture()
+                if let since = pauseStarted { pausedTotal += Date().timeIntervalSince(since) }
+                pauseStarted = nil
+                paused = false
+            } catch {
+                captureFailed(error)
+            }
+        } else {
+            capture.stop()
+            levels.reset()
+            pauseStarted = Date()
+            paused = true
+        }
+    }
+
+    /// Switching source mid-session restarts capture on the new source; the session continues.
+    func setAudioSource(_ source: AudioSourceKind) {
+        guard source != audioSource else { return }
+        audioSource = source
+        guard engine.listening, !paused else { return }
+        capture.stop()
+        do {
+            try startCapture()
+        } catch {
+            captureFailed(error)
+        }
+    }
+
+    /// Listening time, excluding pauses.
+    func elapsed(at date: Date) -> TimeInterval {
+        guard let started = listenStarted else { return current.duration }
+        let pausedNow = pauseStarted.map { date.timeIntervalSince($0) } ?? 0
+        return current.duration + date.timeIntervalSince(started) - pausedTotal - pausedNow
     }
 
     private func apply(_ update: SpeechWorker.Update) {
@@ -383,6 +493,179 @@ final class SessionController: ObservableObject {
     func clearSession() {
         guard !engine.listening else { return }
         mutate { $0.clear() }
+    }
+
+    // MARK: History
+
+    /// The record the screen shows: a past session, or the live one kept in sync with the engine.
+    var displayedRecord: SessionRecord {
+        if let viewingID, let past = sessions.first(where: { $0.id == viewingID }) {
+            return past
+        }
+        var live = engine.record(updating: current)
+        if let started = engine.startedAt, !live.turns.isEmpty { live.started = started }
+        return live
+    }
+
+    var isViewingPast: Bool {
+        viewingID != nil && viewingID != current.id
+    }
+
+    /// Saves the live session and starts an empty one.
+    func newSession() {
+        if engine.listening { stopListening() }
+        persistCurrent()
+        mutate { $0.clear() }
+        current = SessionRecord(started: Date(), direction: engine.direction)
+        translatedNoteText.removeAll()
+        viewingID = nil
+    }
+
+    func open(_ id: UUID) {
+        viewingID = id == current.id ? nil : id
+    }
+
+    func deleteSession(_ id: UUID) {
+        store.delete(id)
+        sessions.removeAll { $0.id == id }
+        if viewingID == id { viewingID = nil }
+        if id == current.id {
+            if engine.listening { stopListening() }
+            mutate { $0.clear() }
+            current = SessionRecord(started: Date(), direction: engine.direction)
+        }
+    }
+
+    func renameDisplayed(_ title: String) {
+        update { $0.title = title }
+    }
+
+    func setUserNotes(_ text: String) {
+        update { $0.userNotes = text }
+    }
+
+    func toggleAction(_ id: String) {
+        update { record in
+            if record.checkedActions.contains(id) {
+                record.checkedActions.remove(id)
+            } else {
+                record.checkedActions.insert(id)
+            }
+        }
+    }
+
+    /// Edits the record on screen. Past sessions save at once; the live one saves with the session.
+    private func update(_ change: (inout SessionRecord) -> Void) {
+        if isViewingPast, let index = sessions.firstIndex(where: { $0.id == viewingID }) {
+            change(&sessions[index])
+            store.save(sessions[index])
+        } else {
+            change(&current)
+            if !engine.turns.isEmpty || !current.userNotes.isEmpty { persistCurrent() }
+        }
+    }
+
+    /// Writes the live session to history. Text only.
+    private func persistCurrent() {
+        var record = engine.record(updating: current)
+        if listenStarted != nil {
+            // Mid-session autosave: the duration so far, without moving the running clock.
+            record.duration = elapsed(at: Date())
+        }
+        guard !record.isEmpty else { return }
+        // Turn times are offsets from the engine's first words; the record's clock starts there too.
+        if let started = engine.startedAt, !record.turns.isEmpty {
+            record.started = started
+        }
+        var kept = record
+        if listenStarted != nil { kept.duration = current.duration }
+        current = kept
+        if let index = sessions.firstIndex(where: { $0.id == record.id }) {
+            sessions[index] = record
+        } else {
+            sessions.insert(record, at: 0)
+        }
+        store.save(record)
+        lastAutosave = Date()
+    }
+
+    // MARK: Export
+
+    enum ExportFormat: String, CaseIterable, Identifiable {
+        case markdown, text, json
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .markdown: return "Markdown"
+            case .text: return "Plain text"
+            case .json: return "JSON"
+            }
+        }
+        var fileExtension: String {
+            switch self {
+            case .markdown: return "md"
+            case .text: return "txt"
+            case .json: return "json"
+            }
+        }
+    }
+
+    func exportData(_ format: ExportFormat) -> Data {
+        let record = displayedRecord
+        switch format {
+        case .markdown: return Data(record.markdown().utf8)
+        case .text: return Data(record.plainText().utf8)
+        case .json: return (try? record.jsonData()) ?? Data()
+        }
+    }
+
+    func copySummary() {
+        copySession(.summary)
+    }
+
+    func exportToNotion() {
+        let settings = NotionExport.load()
+        guard settings.isComplete else {
+            notionSetupPresented = true
+            return
+        }
+        let record = displayedRecord
+        exporting = true
+        Task {
+            defer { exporting = false }
+            do {
+                let url = try await NotionExport.export(record, settings: settings)
+                show("Exported to Notion")
+                #if os(macOS)
+                if let url { NSWorkspace.shared.open(url) }
+                #endif
+            } catch {
+                show(error.localizedDescription)
+            }
+        }
+    }
+
+    // MARK: Summary language
+
+    /// The note is written in the translation language. The other language is translated on demand.
+    var noteLanguage: SpeechLanguage {
+        displayedRecord.direction.target
+    }
+
+    func noteText(_ text: String) -> String {
+        guard let wanted = summaryLanguage, wanted != noteLanguage else { return text }
+        return translatedNoteText[text] ?? text
+    }
+
+    func setSummaryLanguage(_ language: SpeechLanguage) {
+        summaryLanguage = language
+        guard language != noteLanguage else { return }
+        let note = displayedRecord.note
+        let texts = (note.summary + note.decisions + note.openQuestions + note.highlights + note.actions).map(\.text)
+        noteTranslationQueue = texts.filter { translatedNoteText[$0] == nil }
+        #if os(macOS)
+        translateNextNoteText()
+        #endif
     }
 
     func beginRename(_ turnID: String) {
@@ -425,19 +708,65 @@ final class SessionController: ObservableObject {
     }
 
     /// Whole session as plain text, one turn per paragraph.
-    func copyAll(_ part: CopyPart) {
-        let lines = engine.turns.compactMap { turn -> String? in
-            let speaker = engine.speakers.chipsVisible && !turn.speakerLabel.isEmpty ? "\(turn.speakerLabel): " : ""
-            let source = turn.sourceDisplay
-            let translation = turn.translationCommitted + turn.translationProvisional
-            switch part {
-            case .source: return source.isEmpty ? nil : speaker + source
-            case .translation: return translation.isEmpty ? nil : speaker + translation
-            case .both: return source.isEmpty ? nil : speaker + source + (translation.isEmpty ? "" : "\n" + translation)
-            }
+    @Published var copyOptions = SessionCopyOptions() {
+        didSet { saveCopyOptions() }
+    }
+
+    /// The shown session with live text in full: the open turn's tail and provisional translation included.
+    private var copyRecord: SessionRecord {
+        var record = displayedRecord
+        guard !isViewingPast else { return record }
+        record.turns = engine.turns.filter { !$0.sourceDisplay.isEmpty }.map { turn in
+            SavedTurn(
+                id: turn.id,
+                source: turn.sourceDisplay,
+                translation: turn.translationCommitted + turn.translationProvisional,
+                speaker: engine.speakers.chipsVisible ? turn.speakerLabel : "",
+                start: turn.start,
+                end: turn.end ?? turn.start,
+                direction: turn.direction.rawValue
+            )
         }
-        setPasteboard(lines.joined(separator: "\n\n"))
-        show(part == .source ? "All detected text copied" : part == .translation ? "All translations copied" : "Transcript copied")
+        return record
+    }
+
+    func copySession(_ kind: SessionCopyKind) {
+        setPasteboard(copyRecord.copyText(kind, options: copyOptions))
+        switch kind {
+        case .original: show("Original copied")
+        case .translation: show("Translation copied")
+        case .bilingual: show("Bilingual transcript copied")
+        case .summary: show("Summary copied")
+        }
+    }
+
+    /// Column headers and the phone: whole-session copy of one side.
+    func copyAll(_ part: CopyPart) {
+        switch part {
+        case .source: copySession(.original)
+        case .translation: copySession(.translation)
+        case .both: copySession(.bilingual)
+        }
+    }
+
+    func copy(text: String, label: String) {
+        setPasteboard(text)
+        show(label)
+    }
+
+    private func saveCopyOptions() {
+        UserDefaults.standard.set(copyOptions.speakerNames, forKey: "copySpeakers")
+        UserDefaults.standard.set(copyOptions.timestamps, forKey: "copyTimestamps")
+        UserDefaults.standard.set(copyOptions.markdown, forKey: "copyMarkdown")
+    }
+
+    private static func loadCopyOptions() -> SessionCopyOptions {
+        let defaults = UserDefaults.standard
+        var options = SessionCopyOptions()
+        if defaults.object(forKey: "copySpeakers") != nil { options.speakerNames = defaults.bool(forKey: "copySpeakers") }
+        options.timestamps = defaults.bool(forKey: "copyTimestamps")
+        options.markdown = defaults.bool(forKey: "copyMarkdown")
+        return options
     }
 
     func copyTranscript() {
@@ -670,9 +999,32 @@ final class SessionController: ObservableObject {
             return
         }
         translationRunning = false
+        translateNextNoteText()
+    }
+
+    /// Translates note lines one at a time, only while the live translator is idle.
+    private func translateNextNoteText() {
+        guard !translationRunning, engine.pendingTranslation == nil, !noteTranslationQueue.isEmpty else { return }
+        if translator == nil { prepareTranslator() }
+        guard let translator else { return }
+        let text = noteTranslationQueue.removeFirst()
+        let direction: TranslationDirection = noteLanguage == .thai ? .thaiToEnglish : .englishToThai
+        translationRunning = true
+        translator.translate(generation: -1, prompt: TranslationPrompt.text(source: text, direction: direction)) { [weak self] _, translated in
+            guard let self else { return }
+            self.translationRunning = false
+            if !translated.isEmpty { self.translatedNoteText[text] = translated }
+            if let request = self.engine.pendingTranslation {
+                self.translationRunning = true
+                self.runTranslation(request)
+            } else {
+                self.translateNextNoteText()
+            }
+        }
     }
 
     private func shutdown() {
+        if engine.listening { stopListening() } else { persistCurrent() }
         capture.stop()
         worker.stop()
         worker.evictAll()
@@ -685,6 +1037,9 @@ final class SessionController: ObservableObject {
     // MARK: Engine
 
     private func tick() {
+        if engine.listening, Date().timeIntervalSince(lastAutosave) > 15 {
+            persistCurrent()
+        }
         // Only touch the published engine when a notes pass is actually due.
         guard engine.notes.isDue(now: Date()) else { return }
         mutate { $0.tick(now: Date()) }
@@ -787,24 +1142,41 @@ extension SessionController {
     }
 
     func loadDemo() {
-        let start = Date()
+        let start = Date().addingTimeInterval(-360)
+        let lines: [(Int, String, String, Bool)] = [
+            (0, "Thanks for joining, everyone. The main thing today is the rollout schedule for the three new stores opening in January.", "ขอบคุณทุกคนที่มาร่วมประชุม เรื่องหลักวันนี้คือกำหนดการเปิดร้านใหม่สามสาขาในเดือนมกราคม", true),
+            (1, "We can deliver the kiosks for the first two stores by the fifteenth. The third store depends on the building permit, which we're still waiting on.", "เราส่งตู้คีออสก์สำหรับสองสาขาแรกได้ภายในวันที่ 15 ส่วนสาขาที่สามขึ้นอยู่กับใบอนุญาตก่อสร้าง ซึ่งเรายังรออยู่", true),
+            (0, "When do you expect to hear back on the permit?", "คาดว่าจะได้คำตอบเรื่องใบอนุญาตเมื่อไร", true),
+            (1, "Sure. I'll also add the staff training dates so everyone can plan around the opening", "ได้เลย จะเพิ่มวันอบรมพนักงานไปด้วย เพื่อให้ทุกคนวางแผน", false),
+        ]
         mutate { engine in
+            engine.clear()
             engine.direction = .englishToThai
             engine.packInstalled = true
             engine.setListening(true)
-            engine.pushHypothesis("Meeting starts at nine. Please send the notes today.", speakerRaw: 0, at: start, endpoint: true)
-            if let request = engine.pendingTranslation {
-                engine.deliverTranslation(generation: request.generation, text: "การประชุมเริ่มเวลา 09.00 น. กรุณาส่งบันทึกการประชุมในวันนี้", at: start)
+            for (index, line) in lines.enumerated() {
+                let at = start.addingTimeInterval(Double(index) * 70)
+                engine.pushHypothesis(line.1, speakerRaw: line.0, at: at, endpoint: line.3)
+                while let request = engine.pendingTranslation {
+                    engine.deliverTranslation(generation: request.generation, text: line.2, at: at)
+                }
             }
-            engine.pushHypothesis("We decided to ship the translation on this", speakerRaw: 1, at: start.addingTimeInterval(4), endpoint: false)
-            engine.pushHypothesis("We decided to ship the translation on this machine", speakerRaw: 1, at: start.addingTimeInterval(4.2), endpoint: false)
-            if let request = engine.pendingTranslation {
-                engine.deliverTranslation(generation: request.generation, text: "เราตัดสินใจที่จะส่งการแปล", at: start)
-            }
+            engine.rename(ordinal: 1, to: "Sarah")
+            engine.notes.note.summary = [NoteItem(id: "s1", text: "Supplier call on opening three new stores in January. The first two are on track; the third depends on a building permit.", turnID: "t1", speaker: "", tentative: false)]
+            engine.notes.note.decisions = [
+                NoteItem(id: "d1", text: "Kiosks for the first two stores arrive by 15 January.", turnID: "t2", speaker: "Speaker 2", tentative: false),
+                NoteItem(id: "d2", text: "Staff training dates will be added to the timeline.", turnID: "t4", speaker: "Speaker 2", tentative: true),
+            ]
+            engine.notes.note.actions = [NoteItem(id: "a1", text: "Send the updated timeline to the team", turnID: "t4", speaker: "Speaker 2", tentative: false)]
         }
+        current.title = "Supplier call — January rollout"
+        current.userNotes = ""
         speechStatus = .ready("Nemotron EN · Neural Engine · Core ML")
         translatorStatus = .ready("chindamt-4b-bf16 · GPU · Metal (MLX)")
-        listenStarted = start.addingTimeInterval(-42)
+        listenStarted = Date().addingTimeInterval(-768)
+        for value in stride(from: 0, to: 1, by: 0.04) {
+            levels.push(Float(abs(sin(value * 19)) * 0.8 + 0.1))
+        }
     }
 }
 

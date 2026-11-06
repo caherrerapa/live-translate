@@ -144,3 +144,54 @@ final class HubCompatibilityTests: XCTestCase {
         XCTAssertEqual(notes.stopPassCount, 1)
     }
 }
+
+final class SessionRecordTests: XCTestCase {
+    private func record() -> SessionRecord {
+        var note = MeetingNote.empty()
+        note.summary = [NoteItem(id: "s", text: "Stores open in January.", turnID: "t1", speaker: "", tentative: false)]
+        note.actions = [NoteItem(id: "a", text: "Send the timeline", turnID: "t2", speaker: "Speaker 2", tentative: false)]
+        return SessionRecord(
+            title: "Supplier call",
+            started: Date(timeIntervalSince1970: 0),
+            duration: 125,
+            direction: .englishToThai,
+            turns: [
+                SavedTurn(id: "t1", source: "Thanks for joining.", translation: "ขอบคุณที่มาร่วม", speaker: "Sarah", start: 0, end: 2, direction: "en-th"),
+                SavedTurn(id: "t2", source: "We can deliver.", translation: "เราส่งได้", speaker: "Speaker 2", start: 60, end: 62, direction: "en-th"),
+            ],
+            note: note,
+            checkedActions: ["a"]
+        )
+    }
+
+    func testCopyKindsAndOptions() {
+        let r = record()
+        XCTAssertEqual(r.copyText(.original, options: SessionCopyOptions()), "Sarah: Thanks for joining.\n\nSpeaker 2: We can deliver.")
+        XCTAssertEqual(r.copyText(.translation, options: SessionCopyOptions(speakerNames: false)), "ขอบคุณที่มาร่วม\n\nเราส่งได้")
+        XCTAssertEqual(r.copyText(.bilingual, options: SessionCopyOptions()), "Sarah\nThanks for joining.\nขอบคุณที่มาร่วม\n\nSpeaker 2\nWe can deliver.\nเราส่งได้")
+        let markdown = r.copyText(.bilingual, options: SessionCopyOptions(speakerNames: true, timestamps: false, markdown: true))
+        XCTAssertTrue(markdown.hasPrefix("# Supplier call\n\n**Sarah**\nThanks for joining.\n_ขอบคุณที่มาร่วม_"))
+        let summary = r.copyText(.summary, options: SessionCopyOptions())
+        XCTAssertTrue(summary.contains("Summary\n\nStores open in January."))
+        XCTAssertTrue(summary.contains("• Send the timeline (Speaker 2)"))
+        XCTAssertTrue(r.copyText(.summary, options: SessionCopyOptions(markdown: true)).contains("- [x] Send the timeline"))
+    }
+
+    func testHistoryBasics() throws {
+        let r = record()
+        XCTAssertEqual(r.speakerCount, 2)
+        XCTAssertEqual(SessionRecord.durationText(125), "2 min")
+        XCTAssertEqual(SessionRecord.durationText(3900), "1 h 05 min")
+        XCTAssertTrue(r.matches("deliver"))
+        XCTAssertTrue(r.matches("ส่ง"))
+        XCTAssertFalse(r.matches("permit"))
+        let now = Date()
+        XCTAssertEqual(SessionGroup.of(now, now: now), .today)
+        XCTAssertEqual(SessionGroup.of(now.addingTimeInterval(-86_400), now: now), .yesterday)
+        XCTAssertEqual(SessionGroup.of(now.addingTimeInterval(-86_400 * 5), now: now), .earlier)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        XCTAssertEqual(try decoder.decode(SessionRecord.self, from: r.jsonData()), r)
+        XCTAssertTrue(r.markdown().contains("## Action items"))
+    }
+}

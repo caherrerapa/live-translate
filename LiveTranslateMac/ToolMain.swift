@@ -520,10 +520,17 @@ enum SnapshotCLI {
             guard let controller = SessionController.demo() else { exit(3) }
             let models = args.contains("--models")
             if models { controller.stopDemoListening() }
-            let size = models ? NSSize(width: 820, height: 640) : NSSize(width: 1280, height: 640)
+            let captions = args.contains("--captions")
+            let sidebar = args.contains("--sidebar")
+            let inspector = args.contains("--inspector")
+            let size = models ? NSSize(width: 820, height: 640) : captions ? NSSize(width: 640, height: 120)
+                : sidebar ? NSSize(width: 260, height: 900) : inspector ? NSSize(width: 330, height: 900) : NSSize(width: 1440, height: 900)
             let root: AnyView = models
                 ? AnyView(ModelScreen(controller: controller, library: controller.library))
-                : AnyView(SessionScreen(controller: controller, shell: .mac, landscape: false, regularWidth: true))
+                : captions ? AnyView(CaptionsWindow(controller: controller))
+                : sidebar ? AnyView(SessionSidebar(controller: controller, columns: .constant(.all)).background(Color(nsColor: .windowBackgroundColor)))
+                : inspector ? AnyView(SummaryInspector(controller: controller).background(Color(nsColor: .windowBackgroundColor)))
+                : AnyView(MacSessionView(controller: controller))
             let host = NSHostingView(rootView: root.frame(width: size.width, height: size.height))
             let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
             window.contentView = host

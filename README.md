@@ -27,11 +27,13 @@ xcodebuild -project LiveTranslate.xcodeproj -scheme LiveTranslate -configuration
 open DerivedData/Build/Products/Debug/LiveTranslate.app
 ```
 
-The bar shows the direction, Listen / Stop (⌘↩), and Fast / Balanced / Accurate, then one-click icons for Highlight, speakers, notes, Models, type size, Copy, and Save. A status line under the bar names the speech and translation models and where each one runs (CPU, Neural Engine, or GPU). Idle panels read "Listen to translate the room."
+The window has three columns. On the left, session history: search, + for a new session (⌘N), sessions grouped Today / Yesterday / Earlier, and the on-device card with Manage languages. In the middle, the session: title (double-click to rename), English ⇄ Thai, layout (side by side, stacked, translation only), Copy, Export, and the transcript. At the bottom: Microphone or System audio, floating captions (⇧⌘K), the listening timer and level meter, Pause (⇧⌘P), and Listen / Stop (⌘↩). On the right, the summary: EN / TH, key points, action items with checkboxes, your own notes, Copy summary, and Export to Notion. Idle panels read "Listen to translate the room."
 
-If the Mac pack is not installed, the panels name MacBook Pro M4 32GB, best, Listen stays disabled, and Models opens the model screen. Press Listen and allow the microphone. Speak. Committed words stay in the primary text and the live tail stays secondary. Direction stays fixed until Stop. Press Stop to end the session.
+If the Mac pack is not installed, the transcript says so and Manage languages opens the model screen. Press Listen and allow the microphone. Speak. Committed words stay in the primary text and the live tail stays secondary. Languages stay fixed until Stop.
 
-Every turn's text is selectable. Hover a turn for copy buttons, right-click for Copy detected text / Copy translation / Copy both, or use the copy icons in each panel header (⇧⌘C copies all detected text).
+Copy has Original (⌥⌘1), Translation (⌥⌘2), Bilingual line by line (⌥⌘3), and Summary (⌥⌘4), with speaker names, timestamps, and Markdown as options. Hover a turn for Original / Translation / Both, or select any text.
+
+Sessions are kept as text on this Mac (no audio) in Application Support/LiveTranslate/sessions, and can be deleted from the sidebar. System audio uses ScreenCaptureKit and asks for Screen Recording access the first time. Export to Notion sends the session's text to a Notion page you choose, with an integration token kept in the Keychain, and only when you press it.
 
 ### Models from Hugging Face
 

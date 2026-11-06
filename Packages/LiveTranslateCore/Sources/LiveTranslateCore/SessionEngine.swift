@@ -49,6 +49,9 @@ struct SessionEngine {
         self.notes = notes
     }
 
+    /// When the first words of this session arrived. Turn times are offsets from it.
+    var startedAt: Date? { sessionStarted }
+
     var packName: String {
         catalog.pack(id: packID)?.title ?? packID
     }

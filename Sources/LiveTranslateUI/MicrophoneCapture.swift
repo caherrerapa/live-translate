@@ -3,15 +3,45 @@ import Foundation
 
 enum CaptureError: Error {
     case formatUnavailable
+    case noDisplay
+}
+
+/// Where the session hears the room.
+enum AudioSourceKind: String, CaseIterable, Identifiable {
+    case microphone
+    case systemAudio
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .microphone: return "Microphone"
+        case .systemAudio: return "System audio"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .microphone: return "mic"
+        case .systemAudio: return "speaker.wave.2"
+        }
+    }
+}
+
+/// 16 kHz mono float buffers from some source, delivered on an audio thread.
+protocol AudioCapturing: AnyObject {
+    /// `onError` reports a failure that happens after start returns (system audio starts asynchronously).
+    func start(onSamples: @escaping ([Float]) -> Void, onError: @escaping (Error) -> Void) throws
+    func stop()
 }
 
 /// Microphone capture stays in memory. The tap copies 16 kHz mono floats and
 /// does not open a file.
-final class MicrophoneCapture {
+final class MicrophoneCapture: AudioCapturing {
     private let engine = AVAudioEngine()
     private var started = false
 
-    func start(onSamples: @escaping ([Float]) -> Void) throws {
+    func start(onSamples: @escaping ([Float]) -> Void, onError: @escaping (Error) -> Void) throws {
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker])
@@ -47,7 +77,7 @@ final class MicrophoneCapture {
         started = false
     }
 
-    private static func convert(
+    static func convert(
         _ buffer: AVAudioPCMBuffer,
         converter: AVAudioConverter,
         target: AVAudioFormat
