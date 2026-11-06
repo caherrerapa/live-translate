@@ -16,6 +16,8 @@ enum LiveTranslateMain {
             SessionCLI.main()
         } else if args.contains("--probe-speech") {
             ProbeCLI.main()
+        } else if args.contains("--notion-check") {
+            NotionCheckCLI.main()
         } else if args.contains("--hub-search") {
             HubSearchCLI.main()
         } else if args.contains("--snapshot") {
@@ -557,3 +559,29 @@ enum SnapshotCLI {
     }
 }
 #endif
+
+/// Sends a placeholder session through the Notion export with an invalid token:
+/// the request is built and sent, and Notion's refusal comes back as a readable error.
+enum NotionCheckCLI {
+    static func main() {
+        Task { @MainActor in
+            var note = MeetingNote.empty()
+            note.summary = [NoteItem(id: "s", text: "Placeholder summary.", turnID: "t1", speaker: "", tentative: false)]
+            note.actions = [NoteItem(id: "a", text: "Placeholder action", turnID: "t1", speaker: "Speaker 1", tentative: false)]
+            let turns = (1...130).map { SavedTurn(id: "t\($0)", source: "Placeholder line \($0).", translation: "ข้อความ \($0)", speaker: "Speaker 1", start: Double($0), end: Double($0) + 1, direction: "en-th") }
+            let record = SessionRecord(title: "Live Translate check", started: Date(), duration: 60, direction: .englishToThai, turns: turns, note: note)
+            let blocks = NotionExport.blocks(for: record)
+            print("blocks \(blocks.count) (batched as \(Int((Double(blocks.count) / 100).rounded(.up))) requests)")
+            print("page id from link:", NotionExport.pageID(from: "https://www.notion.so/Team-Notes-1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d") ?? "nil")
+            do {
+                _ = try await NotionExport.export(record, settings: .init(token: "ntn_invalid_check_token", parentPageID: "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d"))
+                print("unexpected success")
+                exit(1)
+            } catch {
+                print("notion error:", error.localizedDescription)
+                exit(error.localizedDescription.contains("401") ? 0 : 1)
+            }
+        }
+        RunLoop.main.run()
+    }
+}
