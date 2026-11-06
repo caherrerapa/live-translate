@@ -1,41 +1,71 @@
 #if os(macOS)
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
 private let sessionPalette: [Color] = Theme.speakers
 
-/// The Mac window: session history, the live transcript, and the summary inspector.
+/// The Mac window from the "Mac app — live session" design: a 52 pt header, the
+/// two-column transcript anchored to the bottom with a floating control pill, and
+/// the 300 pt summary panel. The sessions list slides in from the header toggle.
 struct MacSessionView: View {
     @ObservedObject var controller: SessionController
-    @State private var columns: NavigationSplitViewVisibility = .all
-    @State private var showInspector = true
+    @State private var copyMenuOpen = false
     @State private var exportFormat: SessionController.ExportFormat?
-    @State private var focusedTurn: String?
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columns) {
-            SessionSidebar(controller: controller, columns: $columns)
-                .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 320)
-                .background(Theme.sidebar)
-        } detail: {
-            VStack(spacing: 0) {
-                header
-                Divider()
-                TranscriptPane(controller: controller, focusedTurn: $focusedTurn)
-                Divider()
-                BottomBar(controller: controller, levels: controller.levels)
-            }
-            .background(Color(nsColor: .textBackgroundColor))
-            .inspector(isPresented: $showInspector) {
-                SummaryInspector(controller: controller)
-                    .inspectorColumnWidth(min: 280, ideal: 320, max: 420)
+        VStack(spacing: 0) {
+            DesignHeader(controller: controller, copyMenuOpen: $copyMenuOpen)
+            Theme.hairline.frame(height: 1)
+            HStack(spacing: 0) {
+                if controller.showSessions {
+                    SessionSidebar(controller: controller)
+                        .frame(width: 248)
+                        .transition(.move(edge: .leading))
+                    Theme.hairline.frame(width: 1)
+                }
+                TranscriptMain(controller: controller)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if controller.showSummary {
+                    Theme.hairline.frame(width: 1)
+                    SummaryInspector(controller: controller)
+                        .frame(width: 300)
+                        .transition(.move(edge: .trailing))
+                }
             }
         }
+        .background(Color.white)
+        // The header is the title bar: it sits beside the traffic lights, not below them.
+        .ignoresSafeArea(.container, edges: .top)
+        .foregroundStyle(Theme.text)
         .tint(Theme.accent)
+        .background(WindowChrome())
+        .overlay(alignment: .topTrailing) {
+            if copyMenuOpen {
+                ZStack(alignment: .topTrailing) {
+                    // Clicking anywhere else closes the menu, like a native one.
+                    Color.black.opacity(0.001)
+                        .onTapGesture { copyMenuOpen = false }
+                    CopyMenuPanel(controller: controller) { copyMenuOpen = false }
+                        .padding(.top, 46)
+                        .padding(.trailing, 14 + 30 + 4)
+                }
+                .onExitCommand { copyMenuOpen = false }
+            }
+        }
         .overlay(alignment: .bottom) { toast }
         .animation(.easeOut(duration: 0.2), value: controller.toast)
+        .animation(.easeOut(duration: 0.2), value: controller.showSessions)
+        .animation(.easeOut(duration: 0.2), value: controller.showSummary)
         #if DEBUG
-        .task { AutomationRunner.startIfRequested(controller) }
+        .task {
+            AutomationRunner.startIfRequested(controller)
+            // LT_DEMO=1 fills the real window with the design's content, for screenshots.
+            if ProcessInfo.processInfo.environment["LT_DEMO"] != nil {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                controller.loadDemo()
+            }
+        }
         #endif
         .sheet(isPresented: $controller.showModels) {
             ModelScreen(controller: controller, library: controller.library)
@@ -48,6 +78,11 @@ struct MacSessionView: View {
             Button("Save") { controller.renameCurrent(to: controller.renameText) }
             Button("Cancel", role: .cancel) {}
         }
+        .onChange(of: controller.exportRequest) { _, request in
+            guard let request else { return }
+            exportFormat = request
+            controller.exportRequest = nil
+        }
         .fileExporter(
             isPresented: Binding(get: { exportFormat != nil }, set: { if !$0 { exportFormat = nil } }),
             document: ExportFile(data: exportFormat.map { controller.exportData($0) } ?? Data()),
@@ -59,136 +94,163 @@ struct MacSessionView: View {
     @ViewBuilder
     private var toast: some View {
         if let message = controller.toast {
-            Label(message, systemImage: "checkmark.circle.fill")
-                .font(.callout.weight(.medium))
+            Text(message)
+                .font(.system(size: 13, weight: .medium))
                 .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(.regularMaterial, in: Capsule())
-                .shadow(radius: 4, y: 2)
-                .padding(.bottom, 76)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .frame(height: 32)
+                .background(Color.white, in: Capsule())
+                .overlay(Capsule().stroke(Theme.border))
+                .shadow(color: Color(hex: 0x14163C, opacity: 0.08), radius: 12, y: 8)
+                .padding(.bottom, 84)
+                .transition(.opacity)
         }
-    }
-
-    // MARK: Header
-
-    private var header: some View {
-        let record = controller.displayedRecord
-        return HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 2) {
-                EditableTitle(title: record.displayTitle) { controller.renameDisplayed($0) }
-                Text(subtitle(record))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(minWidth: 160, alignment: .leading)
-            Spacer(minLength: 12)
-            LanguagePair(controller: controller)
-            Spacer(minLength: 12)
-            Picker("Layout", selection: $controller.layout) {
-                ForEach(TranscriptLayout.allCases) { layout in
-                    Image(systemName: layout.systemImage)
-                        .help(layout.title)
-                        .tag(layout)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            CopyMenu(controller: controller)
-            Menu {
-                ForEach(SessionController.ExportFormat.allCases) { format in
-                    Button("\(format.title)…") { exportFormat = format }
-                }
-                Divider()
-                Button("Export to Notion…") { controller.exportToNotion() }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "square.and.arrow.up")
-                    Text("Export")
-                }
-                .outlined()
-            }
-            .menuStyle(.button)
-            .buttonStyle(.plain)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            Button {
-                withAnimation { showInspector.toggle() }
-            } label: {
-                Image(systemName: "sidebar.right")
-                    .foregroundStyle(showInspector ? Theme.accent : .secondary)
-                    .padding(6)
-                    .background(showInspector ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 7))
-            }
-            .buttonStyle(.borderless)
-            .help(showInspector ? "Hide summary" : "Show summary")
-        }
-        .padding(.horizontal, 18)
-        .frame(height: 56)
-    }
-
-    private func subtitle(_ record: SessionRecord) -> String {
-        let day: String
-        switch SessionGroup.of(record.started) {
-        case .today: day = "Today"
-        case .yesterday: day = "Yesterday"
-        case .earlier: day = record.started.formatted(date: .abbreviated, time: .omitted)
-        }
-        let speakers = record.speakerCount
-        let time = record.started.formatted(date: .omitted, time: .shortened)
-        return speakers > 0 ? "\(day), \(time) · \(speakers) speaker\(speakers == 1 ? "" : "s")" : "\(day), \(time)"
     }
 }
 
-/// "Copy this session": one side, both sides line by line, or the summary,
-/// with speaker names, timestamps, and Markdown as options.
-struct CopyMenu: View {
+// MARK: Window
+
+/// Puts the traffic lights where the design draws them: centered in the 52 pt header,
+/// 20 pt from the left edge, 8 pt apart. The title bar has no toolbar, so nothing
+/// covers the header that SwiftUI draws underneath it. AppKit re-lays the buttons
+/// out on resize, so they are placed again after every layout change.
+private struct WindowChrome: NSViewRepresentable {
+    final class Coordinator {
+        var observers: [NSObjectProtocol] = []
+        weak var window: NSWindow?
+
+        deinit {
+            observers.forEach(NotificationCenter.default.removeObserver)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { attach(view.window, context.coordinator) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { attach(nsView.window, context.coordinator) }
+    }
+
+    private func attach(_ window: NSWindow?, _ coordinator: Coordinator) {
+        guard let window else { return }
+        if coordinator.window !== window {
+            coordinator.window = window
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+            window.styleMask.insert(.fullSizeContentView)
+            window.toolbar = nil
+            window.backgroundColor = .white
+            let names: [Notification.Name] = [
+                NSWindow.didResizeNotification, NSWindow.didEndLiveResizeNotification,
+                NSWindow.didBecomeKeyNotification, NSWindow.didExitFullScreenNotification,
+            ]
+            coordinator.observers = names.map { name in
+                NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { _ in
+                    MainActor.assumeIsolated { Self.placeLights(window) }
+                }
+            }
+        }
+        Self.placeLights(window)
+    }
+
+    static func placeLights(_ window: NSWindow) {
+        let kinds: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
+        guard let close = window.standardWindowButton(.closeButton),
+              let titlebar = close.superview, let container = titlebar.superview,
+              let frameView = container.superview else { return }
+        // Grow the title bar strip to the header's height so the lights can sit in it.
+        var strip = container.frame
+        strip.size.height = 52
+        strip.origin.y = frameView.bounds.height - 52
+        container.frame = strip
+        titlebar.frame = container.bounds
+        for (index, kind) in kinds.enumerated() {
+            guard let button = window.standardWindowButton(kind) else { continue }
+            let size = button.frame.size
+            button.setFrameOrigin(NSPoint(
+                x: 20 + CGFloat(index) * 20 - (size.width - 12) / 2,
+                y: (52 - size.height) / 2
+            ))
+        }
+    }
+}
+
+// MARK: Header
+
+private struct DesignHeader: View {
     @ObservedObject var controller: SessionController
+    @Binding var copyMenuOpen: Bool
 
     var body: some View {
-        let record = controller.displayedRecord
-        let source = record.direction.source.title
-        let target = record.direction.target.title
-        Menu {
-            Section("Copy this session") {
-                Button { controller.copySession(.original) } label: {
-                    Label("Original · \(source)", systemImage: "text.alignleft")
-                }
-                .keyboardShortcut("1", modifiers: [.command, .option])
-                Button { controller.copySession(.translation) } label: {
-                    Label("Translation · \(target)", systemImage: "text.alignleft")
-                }
-                .keyboardShortcut("2", modifiers: [.command, .option])
-                Button { controller.copySession(.bilingual) } label: {
-                    Label("Bilingual · line by line", systemImage: "rectangle.split.2x1")
-                }
-                .keyboardShortcut("3", modifiers: [.command, .option])
-                Button { controller.copySession(.summary) } label: {
-                    Label("Summary", systemImage: "list.bullet")
-                }
-                .keyboardShortcut("4", modifiers: [.command, .option])
-            }
-            Section("Include") {
-                Toggle("Speaker names", isOn: $controller.copyOptions.speakerNames)
-                Toggle("Timestamps", isOn: $controller.copyOptions.timestamps)
-                Toggle("Markdown formatting", isOn: $controller.copyOptions.markdown)
-            }
-            Section {
-                Text("Hover any line in the transcript to copy just that line — original, translation or both.")
-            }
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "doc.on.doc")
-                Text("Copy")
-                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-            }
-            .outlined()
+        GeometryReader { geo in
+            content(width: geo.size.width)
         }
-        .menuStyle(.button)
+        .frame(height: 52)
+    }
+
+    /// The design's 320 pt title and 400 pt right group at full width; both give way
+    /// together below 1300 pt so the centered language pill always fits.
+    private func content(width: CGFloat) -> some View {
+        let squeeze = min(1, max(0, (width - 960) / 340))
+        let titleWidth = 150 + 170 * squeeze
+        let rightWidth = 132 + 268 * squeeze
+        return HStack(spacing: 8) {
+            // The system's traffic lights: three 12 pt lights with 8 pt gaps.
+            Color.clear.frame(width: 52, height: 12)
+            HeaderIconButton(glyph: .sessions, label: controller.showSessions ? "Hide sessions" : "Show sessions", pressed: controller.showSessions) {
+                controller.showSessions.toggle()
+            }
+            .padding(.leading, 14)
+            EditableTitle(title: controller.displayedRecord.displayTitle) { controller.renameDisplayed($0) }
+                .padding(.leading, 4)
+                .frame(width: titleWidth, alignment: .leading)
+            HStack {
+                Spacer(minLength: 0)
+                LanguagePill(controller: controller)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity)
+            HStack(spacing: 4) {
+                CopyMenuButton(open: $copyMenuOpen)
+                HeaderIconButton(glyph: .summary, label: controller.showSummary ? "Hide summary" : "Show summary", pressed: controller.showSummary) {
+                    controller.showSummary.toggle()
+                }
+            }
+            .frame(width: rightWidth, alignment: .trailing)
+        }
+        .padding(.leading, 20)
+        .padding(.trailing, 14)
+        .frame(height: 52)
+    }
+}
+
+/// 30 pt square header button. Pressed: #ECEEFB fill, accent glyph.
+private struct HeaderIconButton: View {
+    let glyph: Glyph.Kind
+    let label: String
+    var pressed = false
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Glyph(kind: glyph)
+                .foregroundStyle(pressed ? Theme.accent : Theme.tertiary)
+                .frame(width: 30, height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 7)
+                        .fill(pressed ? Theme.accentSoft : (hovering ? Theme.pauseFill : .clear))
+                )
+                .contentShape(Rectangle())
+        }
         .buttonStyle(.plain)
-        .menuIndicator(.hidden)
-        .fixedSize()
+        .onHover { hovering = $0 }
+        .help(label)
+        .accessibilityLabel(label)
     }
 }
 
@@ -203,7 +265,7 @@ private struct EditableTitle: View {
         if editing {
             TextField("Title", text: $draft)
                 .textFieldStyle(.plain)
-                .font(.headline)
+                .font(.system(size: 13, weight: .semibold))
                 .onSubmit {
                     commit(draft)
                     editing = false
@@ -211,8 +273,9 @@ private struct EditableTitle: View {
                 .onExitCommand { editing = false }
         } else {
             Text(verbatim: title)
-                .font(.headline)
+                .font(.system(size: 13, weight: .semibold))
                 .lineLimit(1)
+                .truncationMode(.tail)
                 .onTapGesture(count: 2) {
                     draft = title
                     editing = true
@@ -222,28 +285,34 @@ private struct EditableTitle: View {
     }
 }
 
-/// English ⇄ Thai: the spoken language, a swap button, and the translation language.
-private struct LanguagePair: View {
+/// English ⇄ Thai: a #F4F4F7 capsule with the two language menus and the swap button.
+private struct LanguagePill: View {
     @ObservedObject var controller: SessionController
 
     var body: some View {
         let direction = controller.engine.direction
-        HStack(spacing: 6) {
+        HStack(spacing: 0) {
             languageMenu(direction.source, help: "Spoken language") { picked in
                 controller.setDirection(picked == direction.target ? direction.reversed : TranslationDirection(source: picked, target: direction.target))
             }
             Button(action: controller.swapDirection) {
-                Image(systemName: "arrow.left.arrow.right")
+                Glyph(kind: .swap, size: 14, lineWidth: 1.6)
                     .foregroundStyle(Theme.accent)
-                    .padding(.horizontal, 4)
+                    .frame(width: 26, height: 26)
+                    .contentShape(Circle())
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
             .help("Swap languages")
+            .accessibilityLabel("Swap languages")
             languageMenu(direction.target, help: "Translation language") { picked in
                 controller.setDirection(picked == direction.source ? direction.reversed : TranslationDirection(source: direction.source, target: picked))
             }
         }
-        .disabled(controller.engine.listening || controller.isViewingPast)
+        .padding(.horizontal, 4)
+        .frame(height: 32)
+        .background(Theme.pillFill, in: Capsule())
+        // Fixed while listening, without the grey of a disabled control.
+        .allowsHitTesting(!controller.engine.listening && !controller.isViewingPast)
         .help(controller.engine.listening ? "Languages stay fixed until Stop." : "Spoken language ⇄ translation")
     }
 
@@ -263,11 +332,12 @@ private struct LanguagePair: View {
                 }
             }
         } label: {
-            HStack(spacing: 6) {
-                Text(language.title)
-                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-            }
-            .outlined()
+            Text(language.title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.text)
+                .padding(.horizontal, 10)
+                .frame(height: 26)
+                .contentShape(Capsule())
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -276,152 +346,139 @@ private struct LanguagePair: View {
     }
 }
 
-// MARK: Sidebar
+// MARK: Copy menu
 
-struct SessionSidebar: View {
-    @ObservedObject var controller: SessionController
-    @Binding var columns: NavigationSplitViewVisibility
-    @State private var query = ""
-
-    private var rows: [SessionRecord] {
-        var all = controller.sessions
-        let live = controller.engine.record(updating: controller.current)
-        if !all.contains(where: { $0.id == live.id }) && (controller.engine.listening || !live.turns.isEmpty) {
-            all.insert(live, at: 0)
-        }
-        return all.filter { $0.matches(query) }
-    }
+/// "Copy ▾" in the header. Open: #E1E4F8 fill, #C7CBEF border, #2B3290 text.
+struct CopyMenuButton: View {
+    @Binding var open: Bool
+    @State private var hovering = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search sessions", text: $query)
-                        .textFieldStyle(.plain)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 8))
-                Button(action: controller.newSession) {
-                    Image(systemName: "plus")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 30, height: 30)
-                        .background(Theme.accent, in: RoundedRectangle(cornerRadius: 8))
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut("n", modifiers: .command)
-                .help("New session (⌘N)")
+        Button {
+            open.toggle()
+        } label: {
+            HStack(spacing: 6) {
+                Glyph(kind: .copy)
+                Text("Copy").font(.system(size: 13, weight: .medium))
+                Glyph(kind: open ? .chevronUp : .chevronDown, size: 12, lineWidth: 1.75)
+                    .foregroundStyle(open ? Theme.accentDark : Theme.tertiary)
             }
-            .padding(.horizontal, 10)
-            .padding(.bottom, 8)
-
-            List {
-                ForEach(SessionGroup.allCases, id: \.self) { group in
-                    let members = rows.filter { SessionGroup.of($0.started) == group }
-                    if !members.isEmpty {
-                        Section(group.rawValue.uppercased()) {
-                            ForEach(members) { record in
-                                let chosen = (controller.viewingID ?? controller.current.id) == record.id
-                                row(record, selected: chosen)
-                                    .contentShape(Rectangle())
-                                    .onTapGesture { controller.open(record.id) }
-                                    .listRowBackground(
-                                        RoundedRectangle(cornerRadius: 8)
-                                            .fill(chosen ? Theme.selection : .clear)
-                                            .padding(.horizontal, 8)
-                                    )
-                                    .contextMenu {
-                                        Button("Delete", role: .destructive) { controller.deleteSession(record.id) }
-                                    }
-                            }
-                        }
-                    }
-                }
-            }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
-            .overlay {
-                if rows.isEmpty {
-                    Text(query.isEmpty ? "Sessions you record appear here." : "No matching sessions.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .padding()
-                }
-            }
-
-            OfflineCard(controller: controller)
-                .padding(10)
+            .foregroundStyle(open ? Theme.accentDark : Theme.text)
+            .padding(.leading, 10)
+            .padding(.trailing, 8)
+            .frame(height: 30)
+            .background(
+                RoundedRectangle(cornerRadius: open ? 8 : 7)
+                    .fill(open ? Theme.accentPressed : (hovering ? Theme.pauseFill : .clear))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(open ? Theme.accentPressedBorder : .clear)
+            )
+            .contentShape(Rectangle())
         }
-    }
-
-    private var selection: Binding<UUID?> {
-        Binding(
-            get: { controller.viewingID ?? controller.current.id },
-            set: { if let id = $0 { controller.open(id) } }
-        )
-    }
-
-    private func row(_ record: SessionRecord, selected: Bool) -> some View {
-        let live = record.id == controller.current.id && controller.engine.listening
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 5) {
-                if live {
-                    Circle().fill(Theme.live).frame(width: 7, height: 7)
-                }
-                Text(verbatim: record.displayTitle)
-                    .fontWeight(selected ? .semibold : .regular)
-                    .foregroundStyle(selected ? Theme.accent : .primary)
-                    .lineLimit(1)
-            }
-            Text(live ? "\(record.directionShort) · Live" : "\(record.directionShort) · \(SessionRecord.durationText(record.duration))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.vertical, 2)
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .accessibilityLabel("Copy")
     }
 }
 
-private struct OfflineCard: View {
+/// The design's Copy menu: 320 pt white card, 32 pt rows, the hovered row in accent.
+struct CopyMenuPanel: View {
     @ObservedObject var controller: SessionController
+    /// Screenshots only: draws the Translation row highlighted, as in the design.
+    var previewHighlight = false
+    let close: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Label("On-device · works offline", systemImage: "cpu")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(Theme.accent)
-            Text(modelLine)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-            Button("Manage languages") { controller.showModels = true }
-                .buttonStyle(.link)
-                .font(.caption)
+        let direction = controller.displayedRecord.direction
+        VStack(alignment: .leading, spacing: 0) {
+            sectionTitle("Copy this session", top: 6, bottom: 4)
+            CopyMenuRow(glyph: .lines, title: "Original", detail: "· \(direction.source.title)", shortcut: "⌥⌘1") {
+                controller.copySession(.original); close()
+            }
+            CopyMenuRow(glyph: .lines, title: "Translation", detail: "· \(direction.target.title)", shortcut: "⌥⌘2", forceHighlight: previewHighlight) {
+                controller.copySession(.translation); close()
+            }
+            CopyMenuRow(glyph: .columns, title: "Bilingual", detail: "· line by line", shortcut: "⌥⌘3") {
+                controller.copySession(.bilingual); close()
+            }
+            CopyMenuRow(glyph: .bullets, title: "Summary", detail: nil, shortcut: "⌥⌘4") {
+                controller.copySession(.summary); close()
+            }
+            Theme.border.frame(height: 1).padding(.horizontal, 10).padding(.vertical, 6)
+            sectionTitle("Include", top: 2, bottom: 4)
+            CopyMenuRow(glyph: controller.copyOptions.speakerNames ? .check : nil, title: "Speaker names") {
+                controller.copyOptions.speakerNames.toggle()
+            }
+            CopyMenuRow(glyph: controller.copyOptions.timestamps ? .check : nil, title: "Timestamps") {
+                controller.copyOptions.timestamps.toggle()
+            }
+            CopyMenuRow(glyph: controller.copyOptions.markdown ? .check : nil, title: "Markdown formatting") {
+                controller.copyOptions.markdown.toggle()
+            }
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.hairline))
+        .padding(6)
+        .frame(width: 320)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.menuBorder))
+        .shadow(color: .black.opacity(0.16), radius: 16, y: 12)
     }
 
-    private var modelLine: String {
-        let source = controller.engine.direction.source.title
-        let target = controller.engine.direction.target.title
-        switch controller.speechStatus {
-        case .ready(let name): return "\(source) ⇄ \(target) · \(name)"
-        case .loading(let name): return "Loading \(name)…"
-        case .failed(let message): return message
-        case .idle: return "\(source) ⇄ \(target) · no speech model yet"
+    private func sectionTitle(_ text: String, top: CGFloat, bottom: CGFloat) -> some View {
+        Text(text)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(Theme.tertiary)
+            .padding(.horizontal, 10)
+            .padding(.top, top)
+            .padding(.bottom, bottom)
+    }
+}
+
+private struct CopyMenuRow: View {
+    let glyph: Glyph.Kind?
+    let title: String
+    var detail: String? = nil
+    var shortcut: String? = nil
+    var forceHighlight = false
+    let action: () -> Void
+    @State private var hovered = false
+
+    private var hovering: Bool { hovered || forceHighlight }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                if let glyph {
+                    Glyph(kind: glyph)
+                        .foregroundStyle(glyph == .check && !hovering ? Theme.accent : (hovering ? Color.white : Theme.text))
+                } else {
+                    Color.clear.frame(width: 16, height: 16)
+                }
+                (Text(title) + Text(detail.map { " \($0)" } ?? "").foregroundColor(hovering ? Theme.accentOnDark : Theme.tertiary))
+                    .font(.system(size: 13))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if let shortcut {
+                    Text(shortcut)
+                        .font(.system(size: 12))
+                        .foregroundStyle(hovering ? Theme.accentOnDark : Theme.tertiary)
+                }
+            }
+            .foregroundStyle(hovering ? Color.white : Theme.text)
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+            .background(RoundedRectangle(cornerRadius: 6).fill(hovering ? Theme.accent : .clear))
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
     }
 }
 
 // MARK: Transcript
 
-struct TranscriptPane: View {
+private struct TranscriptMain: View {
     @ObservedObject var controller: SessionController
-    @Binding var focusedTurn: String?
 
     private var record: SessionRecord { controller.displayedRecord }
 
@@ -456,80 +513,75 @@ struct TranscriptPane: View {
         }
     }
 
-    private var sourceName: String { record.direction.source.title }
-    private var targetName: String { record.direction.target.title }
-
     var body: some View {
+        let direction = record.direction
         let layout = controller.layout
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                if layout != .translationOnly {
-                    columnHeader(sourceName, "Original", part: .source)
+        ZStack(alignment: .bottom) {
+            VStack(spacing: 0) {
+                // Column labels: 12 pt semibold, uppercase, 0.04 em tracking.
+                HStack(alignment: .top, spacing: 48) {
+                    if layout != .translationOnly { columnLabel(direction.source.title) }
+                    if layout == .sideBySide || layout == .translationOnly { columnLabel(direction.target.title) }
                 }
-                if layout == .sideBySide {
-                    Divider()
-                }
-                if layout != .stacked {
-                    columnHeader(targetName, "Translation", part: .translation)
-                }
-            }
-            .frame(height: 40)
-            Divider()
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 4) {
-                        let rows = turns
-                        if rows.isEmpty {
-                            EmptyTranscript(controller: controller, sourceName: sourceName)
-                                .frame(maxWidth: .infinity)
-                                .padding(.top, 80)
+                .padding(.top, 16)
+                .padding(.horizontal, 64)
+                .frame(height: 44, alignment: .top)
+                GeometryReader { geo in
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            let rows = turns
+                            VStack(spacing: 6) {
+                                // Turns sit at the bottom, newest last, like the design.
+                                Spacer(minLength: 0)
+                                if rows.isEmpty {
+                                    EmptyTranscript(controller: controller, sourceName: direction.source.title)
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.bottom, 40)
+                                }
+                                ForEach(rows) { turn in
+                                    TurnRow(
+                                        turn: turn,
+                                        direction: direction,
+                                        layout: layout,
+                                        focused: controller.engine.focusedTurnID == turn.id,
+                                        controller: controller
+                                    )
+                                    .id(turn.id)
+                                }
+                            }
+                            .padding(EdgeInsets(top: 4, leading: 48, bottom: 96, trailing: 48))
+                            .frame(minHeight: geo.size.height, alignment: .bottom)
                         }
-                        ForEach(rows) { turn in
-                            TurnRow(
-                                turn: turn,
-                                layout: layout,
-                                selected: focusedTurn == turn.id || controller.engine.focusedTurnID == turn.id,
-                                controller: controller
-                            )
-                            .id(turn.id)
-                            .onTapGesture { focusedTurn = turn.id }
+                        .defaultScrollAnchor(.bottom)
+                        .defaultScrollAnchor(.bottom, for: .sizeChanges)
+                        .onChange(of: controller.engine.focusedTurnID) { _, id in
+                            guard let id else { return }
+                            withAnimation { proxy.scrollTo(id, anchor: .center) }
+                        }
+                        .onChange(of: controller.engine.turns.count) { _, _ in
+                            guard controller.engine.listening, let last = controller.engine.turns.last else { return }
+                            proxy.scrollTo(last.id, anchor: .bottom)
                         }
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                }
-                .defaultScrollAnchor(.bottom, for: .sizeChanges)
-                .onChange(of: controller.engine.focusedTurnID) { _, id in
-                    guard let id else { return }
-                    focusedTurn = id
-                    withAnimation { proxy.scrollTo(id, anchor: .center) }
-                }
-                .onChange(of: controller.engine.turns.count) { _, _ in
-                    guard controller.engine.listening, let last = controller.engine.turns.last else { return }
-                    proxy.scrollTo(last.id, anchor: .bottom)
+                    .overlay(alignment: .top) {
+                        // 48 pt fade from white at the top edge.
+                        LinearGradient(colors: [.white, .white.opacity(0)], startPoint: .top, endPoint: .bottom)
+                            .frame(height: 48)
+                            .allowsHitTesting(false)
+                    }
                 }
             }
+            ControlPill(controller: controller, levels: controller.levels)
+                .padding(.bottom, 24)
         }
-        .font(.system(size: 15 * controller.typeScale))
     }
 
-    private func columnHeader(_ language: String, _ role: String, part: SessionController.CopyPart) -> some View {
-        HStack(spacing: 8) {
-            Text(language).font(.subheadline.weight(.semibold))
-            Text(role).font(.caption).foregroundStyle(.secondary)
-            Spacer()
-            Button {
-                controller.copyAll(part)
-            } label: {
-                Label("Copy all", systemImage: "doc.on.doc")
-                    .font(.caption)
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(Theme.accent)
-            .disabled(turns.isEmpty)
-        }
-        .padding(.horizontal, 30)
-        .frame(maxWidth: .infinity)
+    private func columnLabel(_ text: String) -> some View {
+        Text(text.uppercased())
+            .font(.system(size: 12, weight: .semibold))
+            .tracking(12 * 0.04)
+            .foregroundStyle(Theme.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -538,109 +590,103 @@ private struct EmptyTranscript: View {
     let sourceName: String
 
     var body: some View {
-        if controller.isViewingPast {
-            ContentUnavailableView("No words in this session", systemImage: "text.bubble")
-        } else {
-            switch controller.engine.listenState {
+        VStack(spacing: 10) {
+            switch controller.isViewingPast ? .idle : controller.engine.listenState {
             case .packMissing:
-                ContentUnavailableView {
-                    Label("No speech model yet", systemImage: "shippingbox")
-                } description: {
-                    Text(controller.statusLine.isEmpty ? "Download a pack, or pick a streaming model from Hugging Face." : controller.statusLine)
-                } actions: {
-                    Button("Manage languages") { controller.showModels = true }
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityIdentifier("missingPackModels")
-                }
+                Text("No \(controller.engine.direction.source.title) speech model yet")
+                    .font(.system(size: 15, weight: .semibold))
+                Text(controller.statusLine.isEmpty ? "Download a pack, or pick a streaming model from Hugging Face." : controller.statusLine)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+                Button("Manage languages") { controller.showModels = true }
+                    .buttonStyle(.link)
+                    .font(.system(size: 13, weight: .medium))
+                    .accessibilityIdentifier("missingPackModels")
             case .microphoneDenied:
-                ContentUnavailableView {
-                    Label("Microphone is off", systemImage: "mic.slash")
-                } description: {
-                    Text("Live Translate needs the microphone to hear the room. Audio never leaves this Mac.")
-                } actions: {
-                    Button("Open System Settings", action: controller.openSettings)
-                        .buttonStyle(.borderedProminent)
-                }
+                Text("The microphone is off").font(.system(size: 15, weight: .semibold))
+                Text("Live Translate needs the microphone to hear the room. Audio never leaves this Mac.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.secondary)
+                Button("Open System Settings", action: controller.openSettings)
+                    .buttonStyle(.link)
+                    .font(.system(size: 13, weight: .medium))
             case .idle:
-                ContentUnavailableView {
-                    Label(ListenPolicy.idleLine, systemImage: "waveform")
-                } description: {
-                    Text("Press Listen or ⌘↩. Pick Microphone for the room or System audio for a call on this Mac.")
+                Text(controller.isViewingPast ? "No words in this session." : ListenPolicy.idleLine)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Theme.speakerName)
+                    .accessibilityIdentifier("idleLine")
+                if !controller.isViewingPast {
+                    Text("Press Listen or ⌘↩. Words appear here as they are spoken; the translation follows beside them.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 420)
                 }
-                .accessibilityIdentifier("idleLine")
             case .listening, .listeningSilence:
-                ContentUnavailableView {
-                    Label(controller.paused ? "Paused" : "Listening…", systemImage: controller.paused ? "pause.circle" : "waveform")
-                        .symbolEffect(.variableColor.iterative, isActive: !controller.paused)
-                } description: {
-                    Text("Start speaking \(sourceName). Words appear as they are recognized.")
-                }
+                Text(controller.paused ? "Paused" : "Listening for \(sourceName)…")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Theme.speakerName)
             }
         }
     }
 }
 
+/// One turn: speaker dot and name, then the original and the translation side by side.
+/// Hover shows the time, a #F6F6F9 fill, and a copy button beside each column.
 struct TurnRow: View {
     let turn: DisplayTurn
+    let direction: TranslationDirection
     let layout: TranscriptLayout
-    let selected: Bool
+    let focused: Bool
     @ObservedObject var controller: SessionController
     @State private var hovering = false
 
+    private var active: Bool { hovering || focused }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 if !turn.speaker.isEmpty {
                     Circle()
-                        .fill(turn.colorIndex.map { sessionPalette[$0 % sessionPalette.count] } ?? .gray)
+                        .fill(turn.colorIndex.map { sessionPalette[$0 % sessionPalette.count] } ?? Theme.secondary)
                         .frame(width: 7, height: 7)
                     Text(verbatim: turn.speaker)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Theme.speakerName)
                         .onTapGesture(count: 2) { if turn.renamable { controller.beginRename(turn.id) } }
-                        .help(turn.renamable ? "Double-click to rename" : "")
                 }
-                Text(turn.clock.formatted(date: .omitted, time: .shortened))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                if turn.live {
-                    Label("Live", systemImage: "circle.fill")
-                        .labelStyle(LiveBadgeStyle())
-                }
-                Spacer()
-                if hovering || selected {
-                    copyChip("Original", .source)
-                    copyChip("Translation", .translation)
-                    copyChip("Both", .both)
+                if active {
+                    Text(turn.clock.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)))
+                        .font(.system(size: 12).monospacedDigit())
+                        .foregroundStyle(Theme.secondary)
                 }
             }
             .frame(height: 22)
             switch layout {
             case .sideBySide:
-                HStack(alignment: .top, spacing: 0) {
-                    sourceText.frame(maxWidth: .infinity, alignment: .leading)
-                    Rectangle().fill(Color.primary.opacity(0.08)).frame(width: 1).padding(.horizontal, 16)
-                    translationText.frame(maxWidth: .infinity, alignment: .leading)
+                HStack(alignment: .top, spacing: 48) {
+                    column(sourceText, copyLabel: "Copy original") { copyOriginal() }
+                    column(translationText, copyLabel: "Copy translation") { copyTranslation() }
                 }
             case .stacked:
-                VStack(alignment: .leading, spacing: 6) {
-                    sourceText
-                    translationText.foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 8) {
+                    column(sourceText, copyLabel: "Copy original") { copyOriginal() }
+                    column(translationText, copyLabel: "Copy translation") { copyTranslation() }
                 }
             case .translationOnly:
-                translationText
+                column(translationText, copyLabel: "Copy translation") { copyTranslation() }
             }
         }
+        .padding(.vertical, 14)
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(selected ? Theme.selection.opacity(0.7) : (hovering ? Theme.hover : .clear))
-        )
+        .background(RoundedRectangle(cornerRadius: 12).fill(active ? Theme.rowHighlight : .clear))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .contextMenu {
-            Button("Copy original") { controller.copy(text: turn.sourceText, label: "Original copied") }
-            Button("Copy translation") { controller.copy(text: turn.translationText, label: "Translation copied") }
+            Button("Copy original") { copyOriginal() }
+            Button("Copy translation") { copyTranslation() }
             Button("Copy both") { controller.copy(text: turn.sourceText + "\n" + turn.translationText, label: "Turn copied") }
             if !controller.isViewingPast {
                 Divider()
@@ -655,97 +701,182 @@ struct TurnRow: View {
         }
     }
 
+    private func column(_ text: some View, copyLabel: String, copy: @escaping () -> Void) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            text.frame(maxWidth: .infinity, alignment: .leading)
+            if active {
+                Button(action: copy) {
+                    Glyph(kind: .copy, size: 14)
+                        .foregroundStyle(Theme.accent)
+                        .frame(width: 28, height: 28)
+                        .background(Color.white, in: RoundedRectangle(cornerRadius: 7))
+                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.chipBorder))
+                }
+                .buttonStyle(.plain)
+                .help(copyLabel)
+                .accessibilityLabel(copyLabel)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private var sourceText: some View {
-        (Text(verbatim: turn.source)
-            + Text(verbatim: turn.sourceTail).foregroundStyle(.secondary)
-            + Text(verbatim: turn.live ? "▏" : "").foregroundStyle(Theme.accent))
-            .lineSpacing(3)
+        let language = direction.source
+        return (Text(verbatim: turn.source)
+            + Text(verbatim: turn.sourceTail).foregroundColor(Theme.secondary)
+            + (turn.live ? Text(Image(nsImage: Self.caret)).baselineOffset(-3) : Text("")))
+            .font(Theme.body(language))
+            .lineSpacing(Theme.lineSpacing(language))
+            .foregroundStyle(Theme.text)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, Theme.leadingInset(language))
     }
 
-    @ViewBuilder
     private var translationText: some View {
-        if turn.translationText.isEmpty {
-            Text(turn.live ? "Translating…" : "")
-                .foregroundStyle(.tertiary)
-        } else {
-            (Text(verbatim: turn.translation) + Text(verbatim: turn.translationProvisional).foregroundStyle(.secondary))
-                .lineSpacing(3)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func copyChip(_ title: String, _ part: SessionController.CopyPart) -> some View {
-        Button {
-            switch part {
-            case .source: controller.copy(text: turn.sourceText, label: "Original copied")
-            case .translation: controller.copy(text: turn.translationText, label: "Translation copied")
-            case .both: controller.copy(text: turn.sourceText + "\n" + turn.translationText, label: "Turn copied")
+        let language = direction.target
+        let pending = turn.live && !turn.translationText.isEmpty ? "…" : ""
+        return Group {
+            if turn.translationText.isEmpty {
+                Text(turn.live ? "…" : "")
+                    .foregroundStyle(Theme.secondary)
+            } else {
+                (Text(verbatim: turn.translation)
+                    + Text(verbatim: turn.translationProvisional + pending).foregroundColor(Theme.secondary))
+                    .foregroundStyle(Theme.text)
+                    .textSelection(.enabled)
             }
-        } label: {
-            Label(title, systemImage: "doc.on.doc")
-                .font(.caption)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(.background, in: RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.hairline))
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(Theme.accent)
+        .font(Theme.body(language))
+        .lineSpacing(Theme.lineSpacing(language))
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.top, Theme.leadingInset(language))
     }
+
+    private func copyOriginal() {
+        controller.copy(text: turn.sourceText, label: "Original copied")
+    }
+
+    private func copyTranslation() {
+        controller.copy(text: turn.translationText, label: "Translation copied")
+    }
+
+    /// The design's live caret: a 2 × 18 pt accent bar after the live words.
+    private static let caret: NSImage = {
+        let size = NSSize(width: 4, height: 18)
+        return NSImage(size: size, flipped: false) { _ in
+            NSColor(srgbRed: 0x3A / 255, green: 0x43 / 255, blue: 0xB8 / 255, alpha: 1).setFill()
+            NSRect(x: 2, y: 0, width: 2, height: 18).fill()
+            return true
+        }
+    }()
 }
 
-private struct LiveBadgeStyle: LabelStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(spacing: 3) {
-            configuration.icon.font(.system(size: 5))
-            configuration.title
-        }
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(Theme.live)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background(Theme.live.opacity(0.1), in: Capsule())
-    }
-}
+// MARK: Control pill
 
-// MARK: Bottom bar
-
-struct BottomBar: View {
+/// The floating pill: red dot, Listening, the time, the level bars, Pause, and Stop.
+/// Idle, it offers the audio source, captions, and Listen.
+private struct ControlPill: View {
     @ObservedObject var controller: SessionController
-    /// Not observed here: only the waveform redraws when the level changes.
     let levels: LevelMeter
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             if controller.isViewingPast {
-                Label("Saved session · text only", systemImage: "clock.arrow.circlepath")
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Back to live") { controller.viewingID = nil }
-                Button("New session", action: controller.newSession)
-                    .buttonStyle(.borderedProminent)
+                Text("Saved session")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("text only")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.tertiary)
+                pillButton("Back to live", fill: Theme.accent) { controller.viewingID = nil }
+            } else if controller.engine.listening {
+                Circle().fill(controller.paused ? Color.orange : Theme.live).frame(width: 8, height: 8)
+                Text(controller.paused ? "Paused" : (controller.stopping ? "Finishing" : "Listening"))
+                    .font(.system(size: 13, weight: .semibold))
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(Self.clock(controller.elapsed(at: context.date)))
+                        .font(.system(size: 13).monospacedDigit())
+                        .foregroundStyle(Theme.tertiary)
+                }
+                LevelBars(levels: levels)
+                    .frame(width: 33, height: 20)
+                Button(action: controller.pauseOrResume) {
+                    Glyph(kind: controller.paused ? .play : .pause, size: 14, lineWidth: 2)
+                        .foregroundStyle(Theme.text)
+                        .frame(width: 36, height: 36)
+                        .background(Theme.pauseFill, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 4)
+                .help(controller.paused ? "Resume (⇧⌘P)" : "Pause (⇧⌘P)")
+                .accessibilityLabel(controller.paused ? "Resume" : "Pause")
+                Button(action: controller.listenOrStop) {
+                    HStack(spacing: 6) {
+                        Glyph(kind: .stop, size: 12)
+                        Text("Stop").font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.leading, 12)
+                    .padding(.trailing, 16)
+                    .frame(height: 36)
+                    .background(Theme.live, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("Stop (⌘↩)")
+                .accessibilityIdentifier("listenButton")
             } else {
                 sourceMenu
-                CaptionsButton()
-                status
-                Spacer()
-                if controller.engine.listening {
-                    Button(action: controller.pauseOrResume) {
-                        Label(controller.paused ? "Resume" : "Pause", systemImage: controller.paused ? "play.fill" : "pause.fill")
-                            .outlined()
-                    }
-                    .buttonStyle(.plain)
-                    .keyboardShortcut("p", modifiers: [.command, .shift])
-                    .controlSize(.large)
+                Text(readyLine)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 230, alignment: .leading)
+                Button {
+                    openWindow(id: CaptionsWindow.id)
+                } label: {
+                    Image(systemName: "captions.bubble")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.text)
+                        .frame(width: 36, height: 36)
+                        .background(Theme.pauseFill, in: Circle())
                 }
+                .buttonStyle(.plain)
+                .help("Floating captions (⇧⌘K)")
                 listenButton
             }
         }
-        .padding(.horizontal, 18)
-        .frame(height: 60)
+        .padding(.leading, 18)
+        .padding(.trailing, 6)
+        .frame(height: 48)
+        .background(Color.white, in: Capsule())
+        .overlay(Capsule().stroke(Theme.border))
+        .shadow(color: Color(hex: 0x14163C, opacity: 0.08), radius: 12, y: 8)
+    }
+
+    private var listenButton: some View {
+        let enabled = controller.isPreparing || (controller.engine.listenEnabled && controller.engine.packInstalled)
+        return Button(action: controller.listenOrStop) {
+            HStack(spacing: 6) {
+                if controller.isPreparing {
+                    ProgressView().controlSize(.small).tint(.white)
+                    Text("Loading").font(.system(size: 13, weight: .semibold))
+                } else {
+                    Glyph(kind: .mic, size: 14)
+                    Text("Listen").font(.system(size: 13, weight: .semibold))
+                }
+            }
+            .foregroundStyle(.white)
+            .padding(.leading, 12)
+            .padding(.trailing, 16)
+            .frame(height: 36)
+            .background(enabled ? Theme.accent : Theme.accent.opacity(0.4), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .help("Listen (⌘↩)")
+        .accessibilityIdentifier("listenButton")
     }
 
     private var sourceMenu: some View {
@@ -754,16 +885,21 @@ struct BottomBar: View {
                 Button {
                     controller.setAudioSource(source)
                 } label: {
-                    Label(source.title, systemImage: source.systemImage)
+                    if source == controller.audioSource {
+                        Label(source.title, systemImage: "checkmark")
+                    } else {
+                        Text(source.title)
+                    }
                 }
             }
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: controller.audioSource.systemImage)
-                Text(controller.audioSource.title)
-                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                Glyph(kind: controller.audioSource == .microphone ? .mic : .speaker, size: 14)
+                Text(controller.audioSource.title).font(.system(size: 13, weight: .semibold))
+                Glyph(kind: .chevronDown, size: 12, lineWidth: 1.75).foregroundStyle(Theme.tertiary)
             }
-            .outlined()
+            .foregroundStyle(Theme.text)
+            .contentShape(Rectangle())
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -772,31 +908,16 @@ struct BottomBar: View {
         .help("Microphone hears the room. System audio hears what this Mac plays, such as a call.")
     }
 
-    @ViewBuilder
-    private var status: some View {
-        if controller.engine.listening {
-            HStack(spacing: 8) {
-                Circle().fill(controller.paused ? Color.orange : Theme.live).frame(width: 8, height: 8)
-                Text(controller.paused ? "Paused" : "Listening").fontWeight(.semibold)
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    Text(StatusStrip.elapsed(controller.elapsed(at: context.date)))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                }
-                Waveform(levels: levels)
-                    .frame(width: 150, height: 26)
-            }
-        } else if controller.isPreparing {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("Loading the speech model…").foregroundStyle(.secondary)
-            }
-        } else {
-            Text(readyLine)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+    private func pillButton(_ title: String, fill: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .frame(height: 36)
+                .background(fill, in: Capsule())
         }
+        .buttonStyle(.plain)
     }
 
     private var readyLine: String {
@@ -808,179 +929,111 @@ struct BottomBar: View {
         }
     }
 
-    private var listenButton: some View {
-        Button(action: controller.listenOrStop) {
-            Label(controller.engine.listening ? "Stop" : "Listen", systemImage: controller.engine.listening ? "stop.fill" : "mic.fill")
-                .fontWeight(.semibold)
-                .frame(minWidth: 70)
-        }
-        .buttonStyle(.borderedProminent)
-        .tint(controller.engine.listening ? Theme.live : Theme.accent)
-        .controlSize(.large)
-        .keyboardShortcut(.return, modifiers: .command)
-        .disabled(!controller.engine.listening && !controller.isPreparing && !(controller.engine.listenEnabled && controller.engine.packInstalled))
-        .accessibilityIdentifier("listenButton")
+    static func clock(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds))
+        return total >= 3600
+            ? String(format: "%d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
+            : String(format: "%d:%02d", total / 60, total % 60)
     }
 }
 
-private struct CaptionsButton: View {
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        Button {
-            openWindow(id: CaptionsWindow.id)
-        } label: {
-            Image(systemName: "captions.bubble")
-        }
-        .help("Floating captions, always on top (⇧⌘K)")
-        .keyboardShortcut("k", modifiers: [.command, .shift])
-    }
-}
-
-/// The input level as bars. It observes the meter itself and draws in one Canvas
-/// without animation, so 15 updates a second redraw only these pixels, not the bar
-/// around it or the transcript.
-private struct Waveform: View {
+/// Seven 3 pt bars, 2 pt apart: the two oldest in #9AA0E3, the rest in the accent.
+/// It observes the meter itself and draws in one Canvas, so it redraws alone.
+private struct LevelBars: View {
     @ObservedObject var levels: LevelMeter
 
     var body: some View {
         Canvas { context, size in
-            let values = levels.levels
-            let step = size.width / CGFloat(max(values.count, 1))
-            let width = max(2, step - 2)
+            let values = Array(levels.levels.suffix(7))
             for (index, level) in values.enumerated() {
-                let height = max(3, CGFloat(level) * size.height)
-                let rect = CGRect(x: CGFloat(index) * step, y: (size.height - height) / 2, width: width, height: height)
-                context.fill(
-                    Path(roundedRect: rect, cornerRadius: width / 2),
-                    with: .color(Theme.accent.opacity(0.3 + Double(level) * 0.7))
-                )
+                let height = max(4, min(size.height, CGFloat(level) * size.height))
+                let rect = CGRect(x: CGFloat(index) * 5, y: (size.height - height) / 2, width: 3, height: height)
+                context.fill(Path(roundedRect: rect, cornerRadius: 1.5), with: .color(index < 2 ? Theme.waveQuiet : Theme.accent))
             }
         }
     }
 }
 
-// MARK: Summary inspector
+// MARK: Summary
 
+/// The 300 pt summary panel: Summary with a live dot and Copy, the paragraph,
+/// Key points, and Action items with checkboxes.
 struct SummaryInspector: View {
     @ObservedObject var controller: SessionController
-    @State private var notesDraft = ""
-    @State private var editingID: UUID?
 
     private var record: SessionRecord { controller.displayedRecord }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    heading
-                    summary
-                    keyPoints
-                    actions
-                    yourNotes
-                }
-                .padding(18)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            Divider()
-            HStack {
-                Button(action: controller.copySummary) {
-                    Label("Copy summary", systemImage: "doc.on.doc")
-                }
-                Spacer()
-                Button(action: controller.exportToNotion) {
-                    if controller.exporting {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Label("Export to Notion", systemImage: "square.and.arrow.up")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                HStack(spacing: 8) {
+                    Text("Summary").font(.system(size: 15, weight: .semibold))
+                    if !controller.isViewingPast && (controller.engine.listening || controller.notesRunning) {
+                        Circle().fill(Theme.live).frame(width: 6, height: 6)
+                            .help("Updating live, on this Mac")
                     }
+                    Spacer()
+                    Button(action: controller.copySummary) {
+                        HStack(spacing: 5) {
+                            Glyph(kind: .copy, size: 14)
+                            Text("Copy").font(.system(size: 13, weight: .medium))
+                        }
+                        .foregroundStyle(Theme.accent)
+                        .padding(.horizontal, 8)
+                        .frame(height: 28)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy summary (⌥⌘4)")
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
-                .disabled(controller.exporting)
+                summary
+                keyPoints
+                actions
             }
-            .controlSize(.large)
-            .padding(14)
+            .padding(.vertical, 22)
+            .padding(.horizontal, 24)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .onAppear { syncDraft() }
-        .onChange(of: record.id) { _, _ in syncDraft() }
-    }
-
-    private var heading: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Summary").font(.title3.weight(.semibold))
-                Spacer()
-                Picker("Language", selection: languageBinding) {
-                    Text(record.direction.source.short).tag(record.direction.source)
-                    Text(record.direction.target.short).tag(record.direction.target)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
-                Button(action: controller.copySummary) {
-                    Image(systemName: "doc.on.doc")
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(Theme.accent)
-                .help("Copy summary")
-            }
-            HStack(spacing: 5) {
-                if controller.notesRunning {
-                    ProgressView().controlSize(.mini)
-                    Text("Updating live, on-device")
-                } else if controller.engine.listening && !controller.isViewingPast {
-                    Image(systemName: "sparkles")
-                    Text("Updates live, on-device")
-                } else {
-                    Image(systemName: "lock")
-                    Text("Written on this Mac")
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
+        .background(Theme.panel)
     }
 
     @ViewBuilder
     private var summary: some View {
         let text = record.note.summary.map { controller.noteText($0.text) }.joined(separator: " ")
-        if text.isEmpty {
-            Text(NotesReducer.emptyLine)
-                .foregroundStyle(.secondary)
-        } else {
-            Text(verbatim: text)
-                .lineSpacing(3)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        }
+        Text(verbatim: text.isEmpty ? NotesReducer.emptyLine : text)
+            .font(.system(size: 14))
+            .lineSpacing(14 * 0.26)
+            .foregroundStyle(text.isEmpty ? Theme.secondary : Theme.text)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder
     private var keyPoints: some View {
         let points = record.note.decisions + record.note.openQuestions + record.note.highlights
         if !points.isEmpty {
-            section("Key points") {
-                ForEach(points) { item in
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("•")
-                        (Text(verbatim: controller.noteText(item.text))
-                        )
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if item.tentative {
-                            Text("New")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(Theme.accent)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 1)
-                                .background(Theme.selection, in: Capsule())
+            VStack(alignment: .leading, spacing: 8) {
+                sectionTitle("Key points")
+                VStack(alignment: .leading, spacing: 7) {
+                    ForEach(points) { item in
+                        HStack(alignment: .top, spacing: 0) {
+                            Circle()
+                                .frame(width: 5, height: 5)
+                                .padding(.leading, 4)
+                                .padding(.top, 7.5)
+                                .frame(width: 18, alignment: .leading)
+                            Text(verbatim: controller.noteText(item.text))
+                                .lineSpacing(14 * 0.21)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
-                    }
-                    .contextMenu {
-                        if !controller.isViewingPast {
-                            Button("Jump to turn") { controller.focus(item.turnID) }
-                            Button("Delete", role: .destructive) { controller.deleteNote(id: item.id) }
+                        .font(.system(size: 14))
+                        .opacity(item.tentative ? 0.75 : 1)
+                        .contextMenu {
+                            if !controller.isViewingPast {
+                                Button("Jump to turn") { controller.focus(item.turnID) }
+                                Button("Delete", role: .destructive) { controller.deleteNote(id: item.id) }
+                            }
                         }
                     }
                 }
@@ -991,24 +1044,23 @@ struct SummaryInspector: View {
     @ViewBuilder
     private var actions: some View {
         if !record.note.actions.isEmpty {
-            section("Action items") {
+            VStack(alignment: .leading, spacing: 10) {
+                sectionTitle("Action items")
                 ForEach(record.note.actions) { item in
                     let done = record.checkedActions.contains(item.id)
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Button {
-                            controller.toggleAction(item.id)
-                        } label: {
-                            Image(systemName: done ? "checkmark.square.fill" : "square")
-                                .foregroundStyle(done ? Theme.accent : .secondary)
-                        }
-                        .buttonStyle(.plain)
+                    HStack(alignment: .top, spacing: 10) {
+                        DesignCheckbox(checked: done) { controller.toggleAction(item.id) }
+                            .padding(.top, 2)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(verbatim: controller.noteText(item.text))
-                                .strikethrough(done)
+                                .font(.system(size: 14))
+                                .lineSpacing(14 * 0.1)
                                 .textSelection(.enabled)
                                 .fixedSize(horizontal: false, vertical: true)
                             if !item.speaker.isEmpty {
-                                Text(verbatim: item.speaker).font(.caption).foregroundStyle(.secondary)
+                                Text(verbatim: item.speaker)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(Theme.tertiary)
                             }
                         }
                     }
@@ -1017,46 +1069,137 @@ struct SummaryInspector: View {
         }
     }
 
-    private var yourNotes: some View {
-        section("Your notes") {
-            ZStack(alignment: .topLeading) {
-                TextEditor(text: $notesDraft)
-                    .font(.body)
-                    .scrollContentBackground(.hidden)
-                    .frame(minHeight: 90)
-                    .onChange(of: notesDraft) { _, text in
-                        if text != record.userNotes { controller.setUserNotes(text) }
-                    }
-                if notesDraft.isEmpty {
-                    Text("Add a note to this session…")
-                        .foregroundStyle(.tertiary)
-                        .padding(.leading, 5)
-                        .allowsHitTesting(false)
+    private func sectionTitle(_ text: String) -> some View {
+        Text(text.uppercased())
+            .font(.system(size: 11, weight: .semibold))
+            .tracking(11 * 0.04)
+            .foregroundStyle(Theme.tertiary)
+    }
+}
+
+// MARK: Sessions
+
+/// Session history behind the header's sessions toggle: search, new session,
+/// sessions by day, and the on-device card with Manage languages.
+struct SessionSidebar: View {
+    @ObservedObject var controller: SessionController
+    @State private var query = ""
+
+    private var rows: [SessionRecord] {
+        var all = controller.sessions
+        let live = controller.engine.record(updating: controller.current)
+        if !all.contains(where: { $0.id == live.id }) && (controller.engine.listening || !live.turns.isEmpty) {
+            all.insert(live, at: 0)
+        }
+        return all.filter { $0.matches(query) }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Theme.tertiary)
+                    TextField("Search sessions", text: $query)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13))
                 }
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .background(Theme.pillFill, in: RoundedRectangle(cornerRadius: 8))
+                Button(action: controller.newSession) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 30, height: 30)
+                        .background(Theme.accent, in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .help("New session (⌘N)")
             }
-            .padding(8)
-            .background(RoundedRectangle(cornerRadius: 8).stroke(Theme.hairline))
+            .padding(12)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(SessionGroup.allCases, id: \.self) { group in
+                        let members = rows.filter { SessionGroup.of($0.started) == group }
+                        if !members.isEmpty {
+                            Text(group.rawValue.uppercased())
+                                .font(.system(size: 11, weight: .semibold))
+                                .tracking(11 * 0.04)
+                                .foregroundStyle(Theme.tertiary)
+                                .padding(.horizontal, 10)
+                                .padding(.top, 12)
+                                .padding(.bottom, 4)
+                            ForEach(members) { record in
+                                row(record)
+                            }
+                        }
+                    }
+                    if rows.isEmpty {
+                        Text(query.isEmpty ? "Sessions you record appear here." : "No matching sessions.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.secondary)
+                            .padding(10)
+                    }
+                }
+                .padding(.horizontal, 8)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Label("On-device · works offline", systemImage: "cpu")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                Text(modelLine)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.tertiary)
+                    .lineLimit(2)
+                Button("Manage languages") { controller.showModels = true }
+                    .buttonStyle(.link)
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.border))
+            .padding(12)
+        }
+        .background(Theme.sidebar)
+    }
+
+    private func row(_ record: SessionRecord) -> some View {
+        let chosen = (controller.viewingID ?? controller.current.id) == record.id
+        let live = record.id == controller.current.id && controller.engine.listening
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                if live { Circle().fill(Theme.live).frame(width: 7, height: 7) }
+                Text(verbatim: record.displayTitle)
+                    .font(.system(size: 13, weight: chosen ? .semibold : .regular))
+                    .foregroundStyle(chosen ? Theme.accent : Theme.text)
+                    .lineLimit(1)
+            }
+            Text(live ? "\(record.directionShort) · Live" : "\(record.directionShort) · \(SessionRecord.durationText(record.duration))")
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.tertiary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(chosen ? Theme.accentSoft : .clear))
+        .contentShape(Rectangle())
+        .onTapGesture { controller.open(record.id) }
+        .contextMenu {
+            Button("Delete", role: .destructive) { controller.deleteSession(record.id) }
         }
     }
 
-    private func section(_ title: String, @ViewBuilder content: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title.uppercased())
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            content()
+    private var modelLine: String {
+        let direction = controller.engine.direction
+        switch controller.speechStatus {
+        case .ready(let name): return "\(direction.source.title) ⇄ \(direction.target.title) · \(name)"
+        case .loading(let name): return "Loading \(name)…"
+        case .failed(let message): return message
+        case .idle: return "\(direction.source.title) ⇄ \(direction.target.title) · no speech model yet"
         }
-    }
-
-    private var languageBinding: Binding<SpeechLanguage> {
-        Binding(
-            get: { controller.summaryLanguage ?? controller.noteLanguage },
-            set: { controller.setSummaryLanguage($0) }
-        )
-    }
-
-    private func syncDraft() {
-        notesDraft = record.userNotes
     }
 }
 

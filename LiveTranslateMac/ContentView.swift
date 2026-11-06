@@ -5,10 +5,11 @@ struct ContentView: View {
 
     var body: some View {
         if let controller = model.controller {
-            // The split view's toolbar strip (52 pt) sits above this content, so the
-            // window's own minimum lands on the spec's 960 × 640.
+            // SwiftUI adds the 32 pt title bar to the window's minimum, but the header is
+            // drawn inside that strip, so the window's own minimum lands on 960 × 640.
             MacSessionView(controller: controller)
-                .frame(minWidth: SessionLayout.windowMinWidth, minHeight: SessionLayout.windowMinHeight - 52)
+                .frame(minWidth: SessionLayout.windowMinWidth, minHeight: SessionLayout.windowMinHeight - 32)
+                .ignoresSafeArea(.container, edges: .top)
         } else {
             ContentUnavailableView(
                 "Catalog missing",

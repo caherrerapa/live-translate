@@ -100,11 +100,13 @@ enum AutomationRunner {
     }
 
     static func snapshot(_ name: String) {
-        guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("main") == true }),
-              let view = window.contentView,
-              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
-        view.cacheDisplay(in: view.bounds, to: rep)
-        try? rep.representation(using: .png, properties: [:])?.write(to: folder.appendingPathComponent("\(name).png"))
+        guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("main") == true }) else { return }
+        // The content view renders every SwiftUI layer; the frame view adds the traffic lights.
+        for (view, suffix) in [(window.contentView, ""), (window.contentView?.superview, "-frame")] {
+            guard let view, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: folder.appendingPathComponent("\(name)\(suffix).png"))
+        }
     }
 
     /// Feeds one recording through Listen and returns the turns the window shows.
@@ -165,6 +167,7 @@ enum AutomationRunner {
             await controller.installer.allowAdopt(packID: controller.packID)
             await controller.refreshInstall()
         }
+        headerHitCheck()
         let launched = Date()
         let installed = await waitUntil(180) { controller.engine.packInstalled }
         print("AUTOMATION pack check took \(Date().timeIntervalSince(launched)) s")
@@ -176,6 +179,12 @@ enum AutomationRunner {
         }
         if let only = ProcessInfo.processInfo.environment["LT_AUTOMATION_ONLY"], only == "mic" || only == "system" {
             await liveAudioCheck(controller, source: only == "mic" ? .microphone : .systemAudio, file: english)
+            check("Done", true, folder.path)
+            NSApp.terminate(nil)
+            return
+        }
+        if ProcessInfo.processInfo.environment["LT_AUTOMATION_ONLY"] == "window" {
+            await windowCheck()
             check("Done", true, folder.path)
             NSApp.terminate(nil)
             return
@@ -227,17 +236,7 @@ enum AutomationRunner {
         let noted = await waitUntil(180) { !controller.notesRunning && controller.engine.notes.stopPassCount >= 1 }
         check("Stop runs one last notes pass", noted, "passes \(controller.engine.notes.passCount), title \"\(controller.engine.notes.note.title.text)\"")
 
-        // Shrink the window to the minimum; panels stay readable.
-        if let window = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("main") == true }) {
-            window.setContentSize(NSSize(width: SessionLayout.windowMinWidth, height: SessionLayout.windowMinHeight))
-            await sleep(1)
-            window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 960, height: 640)), display: true)
-            await sleep(1)
-            let size = window.frame.size
-            check("Window shrinks to the 960 × 640 minimum", size.width <= 961 && size.height <= 641, "\(Int(size.width)) × \(Int(size.height))")
-            snapshot("minimum-window")
-            window.setContentSize(NSSize(width: 1440, height: 900))
-        }
+        await windowCheck()
 
         await deleteCheck(controller)
         check("Done", true, folder.path)
@@ -282,6 +281,44 @@ enum AutomationRunner {
         let heard = ["meeting", "notes", "translation", "ship"].filter { source.lowercased().contains($0) }
         check("\(label): speech recognized from real sound", heard.count >= 2, source)
         check("\(label): translated to Thai", translation.unicodeScalars.contains { (0x0E00...0x0E7F).contains($0.value) }, translation)
+    }
+
+    /// Shrink the window to the minimum; panels stay readable.
+    private static func windowCheck() async {
+        guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("main") == true }) else { return }
+        window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 960, height: 640)), display: true)
+        await sleep(1)
+        let size = window.frame.size
+        check("Window shrinks to the 960 × 640 minimum", size.width <= 961 && size.height <= 641,
+              "\(Int(size.width)) × \(Int(size.height)); minSize \(window.minSize) contentMinSize \(window.contentMinSize)")
+        snapshot("minimum-window")
+        print("AUTOMATION MARK minimum-window")
+        fflush(stdout)
+        // Long enough for an outside screen capture of the real window at this size.
+        await sleep(5)
+        window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 1440, height: 900)), display: true)
+    }
+
+    /// The window has an empty toolbar so the traffic lights center in the 52 pt header.
+    /// Clicks on the header must still reach SwiftUI, not the title bar.
+    private static func headerHitCheck() {
+        guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("main") == true }),
+              let content = window.contentView, let frame = content.superview else {
+            check("Header controls receive clicks", false, "no window")
+            return
+        }
+        let width = content.bounds.width
+        let points: [(String, CGFloat)] = [("sessions toggle", 101), ("language pill", width / 2 - 40), ("Copy", width - 90), ("summary toggle", width - 29)]
+        var misses: [String] = []
+        for (name, x) in points {
+            let point = NSPoint(x: x, y: window.frame.height - 26)
+            let hit = frame.hitTest(frame.convert(point, from: nil))
+            // SwiftUI controls live inside the hosting view; the title bar must not take the click.
+            if hit == nil || !(hit!.isDescendant(of: content)) {
+                misses.append("\(name) → \(hit.map { String(describing: type(of: $0)) } ?? "nil")")
+            }
+        }
+        check("Header controls receive clicks", misses.isEmpty, misses.isEmpty ? "sessions, languages, Copy, summary" : misses.joined(separator: "; "))
     }
 
     private static func deleteCheck(_ controller: SessionController) async {

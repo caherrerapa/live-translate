@@ -83,6 +83,13 @@ struct SessionEngine {
         listening = on
     }
 
+    /// Previews and screenshots only: sets a turn's translation without a translator.
+    mutating func setTranslationForPreview(turnID: String, committed: String, provisional: String) {
+        guard let index = turns.firstIndex(where: { $0.id == turnID }) else { return }
+        turns[index].translationCommitted = committed
+        turns[index].translationProvisional = provisional
+    }
+
     /// Rotation and size-class changes keep the turns.
     mutating func noteRotation() {}
 

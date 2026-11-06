@@ -43,6 +43,11 @@ final class SessionController: ObservableObject {
     @Published private(set) var translatedNoteText: [String: String] = [:]
     @Published private(set) var exporting = false
     @Published var notionSetupPresented = false
+    /// Window panels from the design: the sessions list (hidden by default) and the summary.
+    @Published var showSessions = false
+    @Published var showSummary = true
+    /// Set by the menu bar; the window presents the save panel.
+    @Published var exportRequest: ExportFormat?
     let levels = LevelMeter()
     #if DEBUG
     /// Automated checks feed a recording here instead of the microphone.
@@ -1241,41 +1246,61 @@ extension SessionController {
         mutate { $0.listening = false }
     }
 
+    /// The design's "Mac app — live session" content, for screenshots and previews.
     func loadDemo() {
-        let start = Date().addingTimeInterval(-360)
-        let lines: [(Int, String, String, Bool)] = [
-            (0, "Thanks for joining, everyone. The main thing today is the rollout schedule for the three new stores opening in January.", "ขอบคุณทุกคนที่มาร่วมประชุม เรื่องหลักวันนี้คือกำหนดการเปิดร้านใหม่สามสาขาในเดือนมกราคม", true),
-            (1, "We can deliver the kiosks for the first two stores by the fifteenth. The third store depends on the building permit, which we're still waiting on.", "เราส่งตู้คีออสก์สำหรับสองสาขาแรกได้ภายในวันที่ 15 ส่วนสาขาที่สามขึ้นอยู่กับใบอนุญาตก่อสร้าง ซึ่งเรายังรออยู่", true),
-            (0, "When do you expect to hear back on the permit?", "คาดว่าจะได้คำตอบเรื่องใบอนุญาตเมื่อไร", true),
-            (1, "Sure. I'll also add the staff training dates so everyone can plan around the opening", "ได้เลย จะเพิ่มวันอบรมพนักงานไปด้วย เพื่อให้ทุกคนวางแผน", false),
+        var parts = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+        parts.hour = 10
+        parts.minute = 2
+        let start = Calendar.current.date(from: parts) ?? Date()
+        let lines: [(raw: Int, minute: Double, source: String, thai: String)] = [
+            (0, 0, "Thanks for joining, everyone. The main thing today is the rollout schedule for the three new stores opening in January.", "ขอบคุณทุกคนที่มาร่วมประชุม เรื่องหลักวันนี้คือกำหนดการเปิดร้านใหม่สามสาขาในเดือนมกราคม"),
+            (1, 1, "We can deliver the kiosks for the first two stores by the fifteenth. The third store depends on the building permit, which we're still waiting on.", "เราส่งตู้คีออสก์สำหรับสองสาขาแรกได้ภายในวันที่ 15 ส่วนสาขาที่สามขึ้นอยู่กับใบอนุญาตก่อสร้าง ซึ่งเรายังรออยู่"),
+            (0, 2, "When do you expect to hear back on the permit?", "คาดว่าจะได้คำตอบเรื่องใบอนุญาตเมื่อไร"),
+            (1, 3, "Probably by the end of next week. If it slips, we'd move the third opening to early February rather than rush the install.", "น่าจะภายในสิ้นสัปดาห์หน้า ถ้าล่าช้า เราจะเลื่อนการเปิดสาขาที่สามไปเป็นต้นเดือนกุมภาพันธ์ แทนที่จะเร่งติดตั้ง"),
+            (0, 5, "That works for us. Can you send the updated timeline to the team by Friday?", "แบบนั้นได้เลย ช่วยส่งไทม์ไลน์ฉบับอัปเดตให้ทีมภายในวันศุกร์ได้ไหม"),
         ]
         mutate { engine in
             engine.clear()
             engine.direction = .englishToThai
             engine.packInstalled = true
             engine.setListening(true)
-            for (index, line) in lines.enumerated() {
-                let at = start.addingTimeInterval(Double(index) * 70)
-                engine.pushHypothesis(line.1, speakerRaw: line.0, at: at, endpoint: line.3)
+            for line in lines {
+                let at = start.addingTimeInterval(line.minute * 60)
+                engine.pushHypothesis(line.source, speakerRaw: line.raw, at: at, endpoint: true)
                 while let request = engine.pendingTranslation {
-                    engine.deliverTranslation(generation: request.generation, text: line.2, at: at)
+                    engine.deliverTranslation(generation: request.generation, text: line.thai, at: at)
                 }
             }
+            // The live turn: committed words, a replaceable tail, and a translation still forming.
+            let live = start.addingTimeInterval(6 * 60)
+            engine.pushHypothesis("Sure. I'll also add the staff training dates so everyone can plan around", speakerRaw: 1, at: live, endpoint: false)
+            engine.pushHypothesis("Sure. I'll also add the staff training dates so everyone can plan around the opening", speakerRaw: 1, at: live.addingTimeInterval(0.2), endpoint: false)
+            if let request = engine.pendingTranslation {
+                engine.deliverTranslation(generation: request.generation, text: "", at: live)
+            }
+            if let id = engine.turns.last?.id {
+                engine.setTranslationForPreview(turnID: id, committed: "ได้เลย จะเพิ่มวันอบรมพนักงานไปด้วย เพื่อให้ทุกคน", provisional: "วางแผน")
+            }
             engine.rename(ordinal: 1, to: "Sarah")
+            engine.focusedTurnID = engine.turns.count > 3 ? engine.turns[3].id : nil
             engine.notes.note.summary = [NoteItem(id: "s1", text: "Supplier call on opening three new stores in January. The first two are on track; the third depends on a building permit.", turnID: "t1", speaker: "", tentative: false)]
             engine.notes.note.decisions = [
                 NoteItem(id: "d1", text: "Kiosks for the first two stores arrive by 15 January.", turnID: "t2", speaker: "Speaker 2", tentative: false),
-                NoteItem(id: "d2", text: "Staff training dates will be added to the timeline.", turnID: "t4", speaker: "Speaker 2", tentative: true),
+                NoteItem(id: "d2", text: "The permit for store three is expected by the end of next week.", turnID: "t4", speaker: "Speaker 2", tentative: false),
+                NoteItem(id: "d3", text: "If the permit slips, store three opens in early February.", turnID: "t4", speaker: "Speaker 2", tentative: false),
+                NoteItem(id: "d4", text: "Staff training dates will be added to the timeline.", turnID: "t6", speaker: "Speaker 2", tentative: false),
             ]
-            engine.notes.note.actions = [NoteItem(id: "a1", text: "Send the updated timeline to the team", turnID: "t4", speaker: "Speaker 2", tentative: false)]
+            engine.notes.note.actions = [
+                NoteItem(id: "a1", text: "Send the updated timeline to the team", turnID: "t5", speaker: "Speaker 2 · by Friday", tentative: false),
+                NoteItem(id: "a2", text: "Share the permit decision", turnID: "t4", speaker: "Speaker 2 · end of next week", tentative: false),
+            ]
         }
         current.title = "Supplier call — January rollout"
-        current.userNotes = ""
         speechStatus = .ready("Nemotron EN · Neural Engine · Core ML")
-        translatorStatus = .ready("chindamt-4b-bf16 · GPU · Metal (MLX)")
+        translatorStatus = .ready("chindamt-4b-8bit · GPU · Metal (MLX)")
         listenStarted = Date().addingTimeInterval(-768)
-        for value in stride(from: 0, to: 1, by: 0.04) {
-            levels.push(Float(abs(sin(value * 19)) * 0.8 + 0.1))
+        for level: Float in [0.3, 0.6, 0.9, 0.5, 0.75, 0.35, 0.2] {
+            levels.push(level)
         }
     }
 }

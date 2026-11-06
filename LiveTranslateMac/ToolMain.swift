@@ -562,13 +562,24 @@ enum SnapshotCLI {
             }
             let captions = args.contains("--captions")
             let sidebar = args.contains("--sidebar")
+            let copyMenu = args.contains("--copymenu")
             let inspector = args.contains("--inspector")
-            let size = models ? NSSize(width: 820, height: 640) : captions ? NSSize(width: 640, height: 120)
+            let size = models ? NSSize(width: 820, height: 640) : captions ? NSSize(width: 780, height: 200)
+                : copyMenu ? NSSize(width: 380, height: 440)
                 : sidebar ? NSSize(width: 260, height: 900) : inspector ? NSSize(width: 330, height: 900) : NSSize(width: 1440, height: 900)
             let root: AnyView = models
                 ? AnyView(ModelScreen(controller: controller, library: controller.library))
-                : captions ? AnyView(CaptionsWindow(controller: controller))
-                : sidebar ? AnyView(SessionSidebar(controller: controller, columns: .constant(.all)).background(Color(nsColor: .windowBackgroundColor)))
+                : captions ? AnyView(CaptionsWindow(controller: controller).padding(10))
+                : copyMenu ? AnyView(
+                    VStack(alignment: .trailing, spacing: 6) {
+                        CopyMenuButton(open: .constant(true))
+                        CopyMenuPanel(controller: controller, previewHighlight: true) {}
+                    }
+                    .padding([.top, .horizontal], 20)
+                    .frame(width: 380, height: 440, alignment: .topTrailing)
+                    .background(Color(hex: 0xF5F5F7))
+                )
+                : sidebar ? AnyView(SessionSidebar(controller: controller).background(Color(nsColor: .windowBackgroundColor)))
                 : inspector ? AnyView(SummaryInspector(controller: controller).background(Color(nsColor: .windowBackgroundColor)))
                 : AnyView(MacSessionView(controller: controller))
             let host = NSHostingView(rootView: root.frame(width: size.width, height: size.height))
