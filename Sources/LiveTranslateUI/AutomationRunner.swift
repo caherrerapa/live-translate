@@ -201,21 +201,15 @@ enum AutomationRunner {
             // What a person feels is how long a click or key waits; the dispatch-queue timer
             // above also counts time AppKit spends idle in a sheet-animation run loop mode.
             check("Models sheet: main dispatch queue timer (informational)", true, String(format: "worst stall %.0f ms; ", worst * 1000) + watchdog.stalls.map { String(format: "%.0f", $0.1 * 1000) }.joined(separator: ","))
-            // Baseline: the small Notion setup sheet, to separate the system's sheet animation from the models list.
-            let baseline = InputLatencyProbe()
-            baseline.start()
-            for _ in 0..<3 {
-                controller.notionSetupPresented = true
-                await sleep(4)
-                controller.notionSetupPresented = false
-                await sleep(1.5)
-            }
-            let baselineWorst = baseline.stop()
-            // macOS holds input for every sheet's slide animation (~300-400 ms here); the models
-            // sheet may add a little on its first, cold open, but not a visible freeze.
-            check("Models sheet: input waits no longer than a trivial sheet's animation (+250 ms)", inputWorst < baselineWorst + 0.25,
-                  String(format: "models sheet %.0f ms over %d events; trivial sheet %.0f ms over %d events",
-                         inputWorst * 1000, input.count, baselineWorst * 1000, baseline.count))
+            // The models panel lives inside the window, so it must not hold input the way a
+            // sheet does (macOS holds input ~0.4 s while presenting any sheet).
+            check("Models panel: input events handled within 150 ms while it opens and closes", inputWorst < 0.15,
+                  String(format: "models panel %.0f ms over %d events", inputWorst * 1000, input.count))
+            // Rendering the window to a PNG blocks the main thread, so it runs after the timing.
+            controller.showModels = true
+            await sleep(2)
+            snapshot("models-panel")
+            controller.showModels = false
             check("Done", true, folder.path)
             NSApp.terminate(nil)
             return

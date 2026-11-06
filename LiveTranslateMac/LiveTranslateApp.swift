@@ -31,7 +31,7 @@ struct LiveTranslateApp: App {
 }
 
 /// Menu bar commands. The window draws only what the design shows; everything else
-/// (export, Notion, audio source, models, captions, layout) lives here with its shortcut.
+/// (export, audio source, models, captions, layout) lives here with its shortcut.
 struct SessionCommands: Commands {
     /// Not observed: an observed controller would rebuild the whole menu bar on every
     /// transcript update. Titles are fixed and each item reads the state when chosen.
@@ -51,7 +51,6 @@ struct SessionCommands: Commands {
             }
             Button("Copy as Markdown") { controller.copyMarkdown() }
                 .keyboardShortcut("c", modifiers: [.command, .option, .shift])
-            Button("Export to Notion…") { controller.exportToNotion() }
         }
         CommandGroup(after: .pasteboard) {
             Divider()

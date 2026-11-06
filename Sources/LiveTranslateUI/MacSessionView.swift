@@ -69,11 +69,27 @@ struct MacSessionView: View {
             }
         }
         #endif
-        .sheet(isPresented: $controller.showModels) {
-            ModelScreen(controller: controller, library: controller.library)
-        }
-        .sheet(isPresented: $controller.notionSetupPresented) {
-            NotionSetupSheet(controller: controller)
+        // A panel inside the window rather than a sheet: macOS holds all input for ~0.4 s
+        // while it presents or dismisses a sheet, even with animations off.
+        .overlay {
+            if controller.showModels {
+                ZStack {
+                    Color.black.opacity(0.22)
+                        .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .onTapGesture { controller.showModels = false }
+                    ModelScreen(controller: controller, library: controller.library) {
+                        controller.showModels = false
+                    }
+                    .frame(maxWidth: 760, maxHeight: 600)
+                    .background(.background, in: RoundedRectangle(cornerRadius: 12))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.border))
+                    .shadow(color: .black.opacity(0.25), radius: 24, y: 8)
+                    .padding(24)
+                }
+                .accessibilityAddTraits(.isModal)
+            }
         }
         .alert("Rename speaker", isPresented: $controller.renaming) {
             TextField("Name", text: $controller.renameText)
@@ -709,18 +725,20 @@ struct TurnRow: View {
     private func column(_ text: some View, copyLabel: String, copy: @escaping () -> Void) -> some View {
         HStack(alignment: .top, spacing: 10) {
             text.frame(maxWidth: .infinity, alignment: .leading)
-            if active {
-                Button(action: copy) {
-                    Glyph(kind: .copy, size: 14)
-                        .foregroundStyle(Theme.accent)
-                        .frame(width: 28, height: 28)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 7))
-                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.chipBorder))
-                }
-                .buttonStyle(.plain)
-                .help(copyLabel)
-                .accessibilityLabel(copyLabel)
+            // Always laid out, only shown on hover, so the text never re-wraps as the pointer moves.
+            Button(action: copy) {
+                Glyph(kind: .copy, size: 14)
+                    .foregroundStyle(Theme.accent)
+                    .frame(width: 28, height: 28)
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 7))
+                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.chipBorder))
             }
+            .buttonStyle(.plain)
+            .help(copyLabel)
+            .accessibilityLabel(copyLabel)
+            .opacity(active ? 1 : 0)
+            .allowsHitTesting(active)
+            .accessibilityHidden(!active)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -1210,40 +1228,6 @@ struct SessionSidebar: View {
         case .failed(let message): return message
         case .idle: return "\(direction.source.title) ⇄ \(direction.target.title) · no speech model yet"
         }
-    }
-}
-
-// MARK: Notion
-
-struct NotionSetupSheet: View {
-    @ObservedObject var controller: SessionController
-    @Environment(\.dismiss) private var dismiss
-    @State private var settings = NotionExport.load()
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Export to Notion").font(.title2.weight(.semibold))
-            Text("Create an internal integration at notion.so/my-integrations, share a page with it, then paste its token and the page link here. Export sends this session's text — the note, your notes, and the transcript — to that page. Audio never leaves this Mac.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            SecureField("Integration token (secret_… or ntn_…)", text: $settings.token)
-            TextField("Parent page link or id", text: $settings.parentPageID)
-            HStack {
-                Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                Button("Save and export") {
-                    NotionExport.save(settings)
-                    dismiss()
-                    controller.exportToNotion()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!settings.isComplete)
-            }
-        }
-        .textFieldStyle(.roundedBorder)
-        .padding(22)
-        .frame(width: 460)
     }
 }
 #endif

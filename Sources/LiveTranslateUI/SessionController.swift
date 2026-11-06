@@ -42,8 +42,6 @@ final class SessionController: ObservableObject {
     @Published private(set) var paused = false
     @Published var summaryLanguage: SpeechLanguage?
     @Published private(set) var translatedNoteText: [String: String] = [:]
-    @Published private(set) var exporting = false
-    @Published var notionSetupPresented = false
     /// Window panels from the design: the sessions list (hidden by default) and the summary.
     @Published var showSessions = false
     @Published var showSummary = true
@@ -734,28 +732,6 @@ final class SessionController: ObservableObject {
 
     func copySummary() {
         copySession(.summary)
-    }
-
-    func exportToNotion() {
-        let settings = NotionExport.load()
-        guard settings.isComplete else {
-            notionSetupPresented = true
-            return
-        }
-        let record = displayedRecord
-        exporting = true
-        Task {
-            defer { exporting = false }
-            do {
-                let url = try await NotionExport.export(record, settings: settings)
-                show("Exported to Notion")
-                #if os(macOS)
-                if let url { NSWorkspace.shared.open(url) }
-                #endif
-            } catch {
-                show(error.localizedDescription)
-            }
-        }
     }
 
     // MARK: Summary language

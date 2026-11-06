@@ -709,6 +709,8 @@ struct NotesColumn: View {
 struct ModelScreen: View {
     @ObservedObject var controller: SessionController
     @ObservedObject var library: ModelLibrary
+    /// Set when shown as a panel inside the Mac window instead of a sheet.
+    var onDone: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @State private var page: Page = .speech
     @State private var speechLanguage: SpeechLanguage = .thai
@@ -721,7 +723,38 @@ struct ModelScreen: View {
     }
 
     var body: some View {
-        NavigationStack {
+        Group {
+            if let onDone {
+                VStack(spacing: 0) {
+                    HStack {
+                        Text("Models").font(.headline)
+                        Spacer()
+                        Button("Done", action: onDone)
+                            .keyboardShortcut(.cancelAction)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 14)
+                    content
+                }
+            } else {
+                NavigationStack {
+                    content
+                        .navigationTitle("Models")
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Done") { dismiss() }
+                            }
+                        }
+                }
+            }
+        }
+        .frame(minWidth: 720, minHeight: 560)
+        .onAppear {
+            speechLanguage = controller.engine.direction.source
+        }
+    }
+
+    private var content: some View {
             VStack(spacing: 0) {
                 Picker("Show", selection: $page) {
                     Label("Speech", systemImage: "waveform").tag(Page.speech)
@@ -761,17 +794,6 @@ struct ModelScreen: View {
                     TaskModelList(task: .notes, controller: controller, library: library)
                 }
             }
-            .navigationTitle("Models")
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
-        }
-        .frame(minWidth: 720, minHeight: 560)
-        .onAppear {
-            speechLanguage = controller.engine.direction.source
-        }
     }
 
     private var packList: some View {
