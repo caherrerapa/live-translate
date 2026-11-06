@@ -94,6 +94,9 @@ struct MacSessionView: View {
         .sheet(isPresented: $controller.claudeSetupPresented) {
             ClaudeSetupSheet()
         }
+        .sheet(isPresented: $controller.calendarSetupPresented) {
+            CalendarSettingsView()
+        }
         .alert("Rename speaker", isPresented: $controller.renaming) {
             TextField("Name", text: $controller.renameText)
             Button("Save") { controller.renameCurrent(to: controller.renameText) }

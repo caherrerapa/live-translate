@@ -31,6 +31,10 @@ struct PhoneAppView: View {
         .sheet(item: $picking) { side in
             PhoneLanguagePicker(controller: controller, side: side)
         }
+        .sheet(isPresented: $controller.calendarSetupPresented) {
+            ScrollView { CalendarSettingsView() }
+                .presentationDragIndicator(.visible)
+        }
         .translationTask(translationSetup) { session in
             try? await session.prepareTranslation()
         }
@@ -59,6 +63,9 @@ struct PhoneAppView: View {
                 stop()
             case "listen":
                 start()
+            case "calendar":
+                controller.listenOrStop()
+                controller.calendarSetupPresented = true
             case "language":
                 controller.listenOrStop()
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -218,7 +225,10 @@ private struct PhoneStartScreen: View {
             .frame(height: 40)
             .background(Phone.fill, in: Capsule())
             Spacer(minLength: 0)
-            Button { controller.showModels = true } label: {
+            Menu {
+                Button("Languages & Models", systemImage: "waveform") { controller.showModels = true }
+                Button("Google Calendar", systemImage: "calendar") { controller.calendarSetupPresented = true }
+            } label: {
                 Image(systemName: "slider.horizontal.3")
                     .font(.system(size: 19, weight: .regular))
                     .foregroundStyle(Theme.accent)

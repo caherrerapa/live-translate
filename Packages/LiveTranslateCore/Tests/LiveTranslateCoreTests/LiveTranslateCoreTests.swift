@@ -964,6 +964,39 @@ final class LiveTranslateCoreTests: XCTestCase {
         return ""
     }
 
+    func testMeetingContextIsOptionalAndReachesTheMarkdownAndPrompt() throws {
+        // Sessions saved before calendars existed still open.
+        var record = SessionRecord(started: Date(timeIntervalSince1970: 1_700_000_000), direction: .englishToThai)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(record)) as? [String: Any])
+        object.removeValue(forKey: "meeting")
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let old = try decoder.decode(SessionRecord.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertNil(old.meeting)
+
+        record.meeting = MeetingContext(
+            title: "Supplier call",
+            start: record.started,
+            end: record.started.addingTimeInterval(1800),
+            attendees: ["Sarah", "Niran"],
+            agenda: "Rollout schedule\nPermits",
+            link: "https://calendar.google.com/event?eid=1"
+        )
+        let markdown = record.markdown()
+        XCTAssertTrue(markdown.contains("## Meeting"))
+        XCTAssertTrue(markdown.contains("Attendees: Sarah, Niran"))
+        XCTAssertTrue(record.matches("Niran"))
+
+        let line = try XCTUnwrap(record.meeting).promptLine
+        XCTAssertEqual(line, "Meeting: Supplier call. Attendees: Sarah, Niran. Agenda: Rollout schedule Permits")
+        let prompt = NotesProductionPass.prompt(for: NotesInput(note: .empty(), turns: [], context: line))
+        XCTAssertTrue(prompt.contains("Calendar event for this meeting"))
+        XCTAssertTrue(prompt.contains("Attendees: Sarah, Niran"))
+        XCTAssertFalse(NotesProductionPass.prompt(for: NotesInput(note: .empty(), turns: [])).contains("Calendar event"))
+    }
+
     private func sourceSlice(_ source: String, from startMark: String, to endMark: String) throws -> String {
         guard let start = source.range(of: startMark),
               let end = source.range(of: endMark, range: start.upperBound..<source.endIndex) else {

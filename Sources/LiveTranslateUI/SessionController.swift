@@ -23,6 +23,8 @@ final class SessionController: ObservableObject {
     @Published var showModels = false
     /// The "Connect to Claude" sheet.
     @Published var claudeSetupPresented = false
+    /// The "Google Calendar" sheet.
+    @Published var calendarSetupPresented = false
     @Published var renaming = false
     @Published var renameText = ""
     @Published var exportPresented = false
@@ -466,6 +468,7 @@ final class SessionController: ObservableObject {
             current.started = Date()
             current.direction = engine.direction
         }
+        attachMeeting()
         viewingID = nil
         do {
             try startCapture()
@@ -630,11 +633,26 @@ final class SessionController: ObservableObject {
         viewingID != nil && viewingID != current.id
     }
 
+    /// The calendar event happening now names the session and gives the summary its context.
+    private func attachMeeting() {
+        guard current.meeting == nil, GoogleCalendar.shared.isConnected else { return }
+        let session = current.id
+        Task { [weak self] in
+            guard let meeting = await GoogleCalendar.shared.currentMeeting(), let self, self.current.id == session else { return }
+            self.current.meeting = meeting
+            if self.current.title.isEmpty { self.current.title = meeting.title }
+            self.mutate { $0.notes.context = meeting.promptLine }
+        }
+    }
+
     /// Saves the live session and starts an empty one.
     func newSession() {
         if engine.listening { stopListening() }
         persistCurrent()
-        mutate { $0.clear() }
+        mutate {
+            $0.clear()
+            $0.notes.context = ""
+        }
         current = SessionRecord(started: Date(), direction: engine.direction)
         translatedNoteText.removeAll()
         viewingID = nil

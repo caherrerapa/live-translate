@@ -53,6 +53,7 @@ struct SessionCommands: Commands {
                 .keyboardShortcut("c", modifiers: [.command, .option, .shift])
             Divider()
             Button("Connect to Claude…") { controller.claudeSetupPresented = true }
+            Button("Connect Google Calendar…") { controller.calendarSetupPresented = true }
         }
         CommandGroup(after: .pasteboard) {
             Divider()

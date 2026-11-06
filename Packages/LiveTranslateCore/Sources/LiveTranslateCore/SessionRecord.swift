@@ -1,5 +1,25 @@
 import Foundation
 
+/// The calendar event a session was recorded in: who was invited and what it was about.
+/// Gives the summary and Claude the meeting's context.
+struct MeetingContext: Codable, Equatable {
+    var title: String
+    var start: Date
+    var end: Date
+    var attendees: [String]
+    var agenda: String
+    var link: String
+
+    /// One line for the notes prompt.
+    var promptLine: String {
+        var parts = ["Meeting: \(title)"]
+        if !attendees.isEmpty { parts.append("Attendees: \(attendees.joined(separator: ", "))") }
+        let agendaLine = agenda.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !agendaLine.isEmpty { parts.append("Agenda: \(agendaLine.prefix(600))") }
+        return parts.joined(separator: ". ")
+    }
+}
+
 /// One session in the history sidebar. Text only: turns, speaker labels, times,
 /// the note, and the user's own notes. Audio is never part of a record.
 struct SessionRecord: Codable, Identifiable, Equatable {
@@ -12,6 +32,8 @@ struct SessionRecord: Codable, Identifiable, Equatable {
     var note: MeetingNote
     var userNotes: String
     var checkedActions: Set<String>
+    /// The calendar event this session happened in, when a calendar is connected.
+    var meeting: MeetingContext?
 
     init(
         id: UUID = UUID(),
@@ -67,6 +89,7 @@ struct SessionRecord: Codable, Identifiable, Equatable {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return true }
         if displayTitle.localizedCaseInsensitiveContains(needle) { return true }
+        if let meeting, (meeting.title + " " + meeting.attendees.joined(separator: " ")).localizedCaseInsensitiveContains(needle) { return true }
         if userNotes.localizedCaseInsensitiveContains(needle) { return true }
         return turns.contains {
             $0.source.localizedCaseInsensitiveContains(needle) || $0.translation.localizedCaseInsensitiveContains(needle)
@@ -79,6 +102,14 @@ struct SessionRecord: Codable, Identifiable, Equatable {
         var lines = ["# \(displayTitle)", ""]
         lines.append("\(started.formatted(date: .abbreviated, time: .shortened)) · \(directionShort) · \(Self.durationText(duration)) · \(speakerCount) speakers")
         lines.append("")
+        if let meeting {
+            lines += ["## Meeting", "", "**\(meeting.title)** · \(meeting.start.formatted(date: .omitted, time: .shortened))–\(meeting.end.formatted(date: .omitted, time: .shortened))"]
+            if !meeting.attendees.isEmpty { lines.append("Attendees: \(meeting.attendees.joined(separator: ", "))") }
+            let agenda = meeting.agenda.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !agenda.isEmpty { lines += ["", agenda] }
+            if !meeting.link.isEmpty { lines += ["", meeting.link] }
+            lines.append("")
+        }
         lines.append(contentsOf: noteMarkdown())
         lines.append("## Transcript")
         lines.append("")

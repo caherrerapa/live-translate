@@ -61,6 +61,8 @@ struct NotesTurn: Equatable {
 struct NotesInput: Equatable {
     var note: MeetingNote
     var turns: [NotesTurn]
+    /// The calendar event's title, attendees and agenda, when known.
+    var context: String = ""
 }
 
 struct DraftItem: Equatable {
@@ -105,6 +107,8 @@ struct NotesReducer {
     /// `requestedPass` for the app to run off the main thread, then the app
     /// calls `finishDeferredPass`. A notes model takes seconds; the UI must not wait.
     var defersModel = false
+    /// The calendar event's context for every pass; empty when no calendar is connected.
+    var context = ""
     private(set) var requestedPass: NotesInput?
     private(set) var passRunning = false
     private var rerunReason: NotesPassReason?
@@ -189,7 +193,7 @@ struct NotesReducer {
         _ = liveTail
         _ = audioPath
         let pending = turns.filter { !$0.folded }
-        return NotesInput(note: note, turns: pending)
+        return NotesInput(note: note, turns: pending, context: context)
     }
 
     private mutating func schedule(now: Date) {
@@ -214,10 +218,10 @@ struct NotesReducer {
                 if rerunReason != .stop { rerunReason = reason }
                 return
             }
-            requestedPass = NotesInput(note: note, turns: pending)
+            requestedPass = NotesInput(note: note, turns: pending, context: context)
             passRunning = true
         } else {
-            let draft = model(NotesInput(note: note, turns: pending))
+            let draft = model(NotesInput(note: note, turns: pending, context: context))
             apply(draft)
         }
         let pendingIDs = Set(pending.map(\.id))
@@ -381,6 +385,9 @@ enum NotesProductionPass {
             for item in items where !item.text.isEmpty {
                 lines.append("\(item.turnID) | \(item.text)")
             }
+        }
+        if !input.context.isEmpty {
+            lines.append("Calendar event for this meeting (context only; summarize what was said): \(input.context)")
         }
         dump("Previous summary:", input.note.summary)
         dump("Previous decisions:", input.note.decisions)
