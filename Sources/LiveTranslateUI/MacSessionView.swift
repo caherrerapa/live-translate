@@ -64,6 +64,8 @@ struct MacSessionView: View {
             if ProcessInfo.processInfo.environment["LT_DEMO"] != nil {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 controller.loadDemo()
+                NSApp.activate()
+                NSApp.windows.first { $0.identifier?.rawValue.hasPrefix("main") == true }?.makeKeyAndOrderFront(nil)
             }
         }
         #endif
@@ -1003,6 +1005,7 @@ struct SummaryInspector: View {
         Text(verbatim: text.isEmpty ? NotesReducer.emptyLine : text)
             .font(.system(size: 14))
             .lineSpacing(14 * 0.26)
+            .padding(.top, 1.5)
             .foregroundStyle(text.isEmpty ? Theme.secondary : Theme.text)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
@@ -1019,11 +1022,13 @@ struct SummaryInspector: View {
                         HStack(alignment: .top, spacing: 0) {
                             Circle()
                                 .frame(width: 5, height: 5)
-                                .padding(.leading, 4)
-                                .padding(.top, 7.5)
+                                .padding(.leading, 1)
+                                .padding(.top, 8.5)
                                 .frame(width: 18, alignment: .leading)
+                            // 14 pt at line-height 1.45, as in the design's list.
                             Text(verbatim: controller.noteText(item.text))
-                                .lineSpacing(14 * 0.21)
+                                .lineSpacing(14 * 0.31)
+                                .padding(.top, 1)
                                 .textSelection(.enabled)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -1054,7 +1059,9 @@ struct SummaryInspector: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(verbatim: controller.noteText(item.text))
                                 .font(.system(size: 14))
-                                .lineSpacing(14 * 0.1)
+                                .lineSpacing(14 * 0.2)
+                                // CSS fits "…timeline to the" on the first line; SwiftUI needs a hair more room.
+                                .padding(.trailing, -4)
                                 .textSelection(.enabled)
                                 .fixedSize(horizontal: false, vertical: true)
                             if !item.speaker.isEmpty {

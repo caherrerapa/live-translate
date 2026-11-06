@@ -183,6 +183,12 @@ enum AutomationRunner {
             NSApp.terminate(nil)
             return
         }
+        if ProcessInfo.processInfo.environment["LT_AUTOMATION_ONLY"] == "keys" {
+            await keyboardCheck(controller)
+            check("Done", true, folder.path)
+            NSApp.terminate(nil)
+            return
+        }
         if ProcessInfo.processInfo.environment["LT_AUTOMATION_ONLY"] == "window" {
             await windowCheck()
             check("Done", true, folder.path)
@@ -281,6 +287,61 @@ enum AutomationRunner {
         let heard = ["meeting", "notes", "translation", "ship"].filter { source.lowercased().contains($0) }
         check("\(label): speech recognized from real sound", heard.count >= 2, source)
         check("\(label): translated to Thai", translation.unicodeScalars.contains { (0x0E00...0x0E7F).contains($0.value) }, translation)
+    }
+
+    /// The design's shortcuts, sent as real key events through the app's menu bar:
+    /// ⌥⌘1–4 copy the session, ⇧⌘K opens the floating captions above other windows.
+    private static func keyboardCheck(_ controller: SessionController) async {
+        controller.loadDemo()
+        await sleep(1)
+        func press(_ key: String, _ flags: NSEvent.ModifierFlags) -> Bool {
+            guard let event = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: NSApp.mainWindow?.windowNumber ?? 0, context: nil,
+                characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: 0
+            ) else { return false }
+            return NSApp.mainMenu?.performKeyEquivalent(with: event) ?? false
+        }
+        let expectations: [(String, String, (String) -> Bool)] = [
+            ("1", "⌥⌘1 copies the original", { $0.contains("Thanks for joining") && !$0.contains("ขอบคุณ") }),
+            ("2", "⌥⌘2 copies the translation", { $0.contains("ขอบคุณ") && !$0.contains("Thanks for joining") }),
+            ("3", "⌥⌘3 copies both, line by line", { $0.contains("opening in January.\nขอบคุณ") }),
+            ("4", "⌥⌘4 copies the summary", { $0.contains("Supplier call on opening three new stores") && $0.contains("Send the updated timeline") }),
+        ]
+        for (key, name, valid) in expectations {
+            NSPasteboard.general.clearContents()
+            let handled = press(key, [.command, .option])
+            await sleep(0.3)
+            let pasted = NSPasteboard.general.string(forType: .string) ?? ""
+            check(name, handled && valid(pasted), String(pasted.prefix(120)))
+        }
+        controller.copyOptions.timestamps = true
+        NSPasteboard.general.clearContents()
+        _ = press("1", [.command, .option])
+        await sleep(0.3)
+        let stamped = NSPasteboard.general.string(forType: .string) ?? ""
+        check("Include → Timestamps adds times", stamped.contains("Sarah · 10:02"), String(stamped.prefix(80)))
+        controller.copyOptions.timestamps = false
+
+        let opened = press("k", [.command, .shift])
+        await sleep(1.5)
+        let captions = NSApp.windows.first { $0.identifier?.rawValue.hasPrefix(CaptionsWindow.id) == true }
+        check("⇧⌘K opens floating captions", opened && captions?.isVisible == true, captions.map { "\(Int($0.frame.width)) × \(Int($0.frame.height))" } ?? "no window")
+        // SwiftUI's .floating window level is AppKit's utility level (19): above every normal window.
+        check("Captions keep on top of other windows", (captions?.level.rawValue ?? 0) > NSWindow.Level.normal.rawValue,
+              "level \(captions?.level.rawValue ?? -1) vs normal \(NSWindow.Level.normal.rawValue)")
+        if let captions, let view = captions.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: folder.appendingPathComponent("captions-live.png"))
+        }
+        let toggled = press("i", [.command, .option])
+        await sleep(0.5)
+        check("⌥⌘I hides the summary panel", toggled && !controller.showSummary, "showSummary \(controller.showSummary)")
+        _ = press("i", [.command, .option])
+        let sessions = press("s", [.command, .control])
+        await sleep(0.5)
+        check("⌃⌘S shows the sessions list", sessions && controller.showSessions, "showSessions \(controller.showSessions)")
+        _ = press("s", [.command, .control])
     }
 
     /// Shrink the window to the minimum; panels stay readable.
