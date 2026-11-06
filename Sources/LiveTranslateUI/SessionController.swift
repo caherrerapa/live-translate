@@ -6,6 +6,14 @@ import AppKit
 import UIKit
 #endif
 
+/// What the speech side is doing, for the status bar.
+enum EngineStatus: Equatable {
+    case idle
+    case loading(String)
+    case ready(String)
+    case failed(String)
+}
+
 @MainActor
 final class SessionController: ObservableObject {
     @Published private(set) var engine: SessionEngine
@@ -16,21 +24,34 @@ final class SessionController: ObservableObject {
     @Published var statusLine = ""
     @Published var typeScale: Double = 1.15
     @Published var phoneShowsNotes = false
+    @Published private(set) var speechStatus: EngineStatus = .idle
+    @Published private(set) var translatorStatus: EngineStatus = .idle
+    @Published private(set) var notesRunning = false
+    @Published private(set) var listenStarted: Date?
+    @Published var toast: String?
     let catalog: ModelCatalog
     let packID: String
     let platform: String
     let installer: PackInstaller
+    let library: ModelLibrary
     private let capture = MicrophoneCapture()
+    private let worker = SpeechWorker()
     private let storage: URL
     private var ticker: Task<Void, Never>?
+    private var toastTask: Task<Void, Never>?
     private var preparingListen = false
+    private var listenWhenReady = false
+    private var activeSpeechKey: String?
+    private var speechGeneration = 0
     private var renameTurnID: String?
     private var speakerLabeler = LSEENDSpeakerLabeler()
+    private var labelerReady = false
+    private let notesQueue = DispatchQueue(label: "live-translate.notes", qos: .utility)
     #if os(macOS)
     private let notesClient = TyphoonNotesClient()
-    private var speech: SherpaStreamingDecoder?
     private var translator: ChindaTranslator?
     private var translationRunning = false
+    private var terminationObserver: NSObjectProtocol?
     #endif
 
     init(catalog: ModelCatalog, packID: String, platform: String, storage: URL) {
@@ -41,9 +62,11 @@ final class SessionController: ObservableObject {
         #if os(macOS)
         notesClient.packID = packID
         let client = notesClient
-        let notes = NotesReducer { input in
+        var notes = NotesReducer { input in
             NotesProductionPass.produce(input: input) { client.draft(for: $0) }
         }
+        // The notes model takes seconds per pass. It runs on `notesQueue`, never inline on the main thread.
+        notes.defersModel = true
         #else
         let notes = NotesReducer { input in
             NotesProductionPass.produce(input: input) { _ in
@@ -55,13 +78,28 @@ final class SessionController: ObservableObject {
         installer = PackInstaller(root: storage) { url, offset in
             RangeByteSource(url: url, offset: offset)
         }
+        library = ModelLibrary(storage: storage)
+        library.verifyInstall = { [weak self] candidate, directory in
+            await self?.verifyRuntime(candidate: candidate, directory: directory)
+        }
         ticker = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
-                await self?.tick()
+                self?.tick()
             }
         }
+        #if os(macOS)
+        notesClient.modelOverride = library.selected(.notes).map { library.modelDirectory(for: $0) }
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.shutdown() }
+        }
+        #endif
         Task { await refreshInstall() }
+        Task { await prepareLabeler() }
     }
 
     func noteRotation() {
@@ -72,9 +110,22 @@ final class SessionController: ObservableObject {
 
     var listenTitle: String { engine.listening ? "Stop" : "Listen" }
 
+    var isPreparing: Bool { preparingListen || listenWhenReady }
+
     var platformPacks: [ModelPack] {
         PackPolicy.packs(on: platform, catalog: catalog)
     }
+
+    /// Listen works with the pack, or with a downloaded speech model for the source language.
+    var canListen: Bool {
+        (engine.packInstalled || hasSelectedSpeech) && !engine.microphoneDenied
+    }
+
+    private var hasSelectedSpeech: Bool {
+        library.selected(.speech(engine.direction.source)) != nil
+    }
+
+    // MARK: Install
 
     func refreshInstall() async {
         #if os(macOS)
@@ -82,32 +133,24 @@ final class SessionController: ObservableObject {
         #endif
         let files = pinnedFiles(packID: engine.packID)
         let installed = await installer.isInstalled(packID: engine.packID, files: files)
-        mutate { $0.packInstalled = installed }
-        if installed {
+        // A downloaded speech model is enough to listen; the session engine gates on this flag.
+        mutate { $0.packInstalled = installed || hasSelectedSpeech }
+        if installed || hasSelectedSpeech {
             statusLine = ""
         } else {
             statusLine = "\(packName) is not on this machine."
         }
+        prepareSpeech()
+        #if os(macOS)
+        prepareTranslator()
+        #endif
     }
 
+    // MARK: Listen
+
     func listenOrStop() {
-        if engine.listening {
-            capture.stop()
-            #if os(macOS)
-            speech?.close()
-            speech = nil
-            #endif
-            mutate { $0.stop(at: Date()) }
-            Task { await installer.setListening(false) }
-            #if os(macOS)
-            if let request = engine.pendingTranslation, !translationRunning {
-                translationRunning = true
-                runTranslation(request)
-            } else if !translationRunning {
-                translator?.stop()
-                translator = nil
-            }
-            #endif
+        if engine.listening || listenWhenReady {
+            stopListening()
             return
         }
         guard engine.listenEnabled, engine.packInstalled else { return }
@@ -133,6 +176,23 @@ final class SessionController: ObservableObject {
         beginCapture()
     }
 
+    private func stopListening() {
+        listenWhenReady = false
+        capture.stop()
+        worker.stop()
+        listenStarted = nil
+        guard engine.listening else { return }
+        mutate { $0.stop(at: Date()) }
+        library.listening = false
+        Task { await installer.setListening(false) }
+        #if os(macOS)
+        if let request = engine.pendingTranslation, !translationRunning {
+            translationRunning = true
+            runTranslation(request)
+        }
+        #endif
+    }
+
     func openSettings() {
         #if os(macOS)
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
@@ -148,30 +208,164 @@ final class SessionController: ObservableObject {
     func setDirection(_ direction: TranslationDirection) {
         guard !engine.listening else { return }
         mutate { $0.direction = direction }
+        Task { await refreshInstall() }
+    }
+
+    func swapDirection() {
+        setDirection(engine.direction == .thaiToEnglish ? .englishToThai : .thaiToEnglish)
     }
 
     func setPreset(_ preset: LatencyPreset) {
         mutate { $0.preset = preset }
+        prepareSpeech()
+    }
+
+    /// The speech graph for the current direction and preset, loaded off the main thread.
+    /// The worker keeps it resident, so Listen starts at once and a swap back is free.
+    func prepareSpeech() {
+        guard let plan = speechPlan() else {
+            speechStatus = engine.packInstalled ? .failed("No speech model for \(engine.direction.source == .thai ? "Thai" : "English").") : .idle
+            return
+        }
+        if plan.key == activeSpeechKey, case .ready = speechStatus { return }
+        speechGeneration += 1
+        let generation = speechGeneration
+        speechStatus = .loading(plan.title)
+        worker.activate(key: plan.key, make: plan.make) { [weak self] decoder in
+            guard let self, generation == self.speechGeneration else { return }
+            if let decoder {
+                self.activeSpeechKey = plan.key
+                self.speechStatus = .ready("\(plan.title) · \(decoder.engineLabel)")
+                if self.listenWhenReady {
+                    self.listenWhenReady = false
+                    self.startListening()
+                }
+            } else {
+                self.activeSpeechKey = nil
+                self.speechStatus = .failed("\(plan.title) could not be opened.")
+                self.listenWhenReady = false
+            }
+        }
+    }
+
+    private struct SpeechPlan {
+        var key: String
+        var title: String
+        var make: () -> LiveSpeechDecoder?
+    }
+
+    private func speechPlan() -> SpeechPlan? {
+        let language = engine.direction.source
+        if let candidate = library.selected(.speech(language)) {
+            let directory = library.modelDirectory(for: candidate)
+            let title = candidate.repo.split(separator: "/").last.map(String.init) ?? candidate.repo
+            switch candidate.runtime {
+            case .coreMLNemotron:
+                return SpeechPlan(key: "hub:\(candidate.id)", title: title) {
+                    CoreMLNemotronDecoder(directory: directory)
+                }
+            case .sherpaStreaming:
+                #if os(macOS)
+                let prompted = candidate.featureDim == 128
+                return SpeechPlan(key: "hub:\(candidate.id)", title: title) {
+                    SherpaStreamingDecoder(
+                        directory: directory,
+                        language: language,
+                        featureDim: candidate.featureDim,
+                        prompted: prompted
+                    )
+                }
+                #else
+                return nil
+                #endif
+            case .mlx:
+                return nil
+            }
+        }
         #if os(macOS)
-        guard engine.listening, engine.packInstalled else { return }
-        speech?.close()
-        openSpeechGraph()
+        guard engine.packInstalled else { return nil }
+        let chunk = engine.chunkMilliseconds() ?? 1040
+        let precision = PackPolicy.speechPrecision(packID: engine.packID)
+        let packID = engine.packID
+        let storage = self.storage
+        let title = language == .thai ? "Typhoon ASR 0.6B" : "Nemotron 3.5 EN"
+        return SpeechPlan(key: "pack:\(packID):\(language.rawValue):\(chunk):\(precision)", title: "\(title) \(chunk) ms") {
+            SherpaStreamingDecoder(
+                language: language,
+                chunkMS: chunk,
+                precision: precision,
+                installRoot: storage,
+                packID: packID
+            )
+        }
+        #else
+        return nil
         #endif
     }
 
-    #if os(macOS)
-    private func openSpeechGraph() {
-        let chunk = engine.chunkMilliseconds() ?? 1040
-        let precision = PackPolicy.speechPrecision(packID: engine.packID)
-        speech = SherpaStreamingDecoder(
-            language: engine.direction.source,
-            chunkMS: chunk,
-            precision: precision,
-            installRoot: storage,
-            packID: engine.packID
-        )
+    private func prepareLabeler() async {
+        let labeler = speakerLabeler
+        await labeler.prepare()
+        labelerReady = true
+        worker.setLabeler(labeler)
     }
-    #endif
+
+    private func beginCapture() {
+        mutate { $0.microphoneDenied = false }
+        if case .ready = speechStatus {
+            startListening()
+        } else {
+            // The graph is still loading. Listen starts the moment it is ready.
+            listenWhenReady = true
+            prepareSpeech()
+        }
+    }
+
+    private func startListening() {
+        mutate { $0.setListening(true) }
+        guard engine.listening, engine.packInstalled else { return }
+        library.listening = true
+        Task { await installer.setListening(true) }
+        #if os(macOS)
+        prepareTranslator()
+        #endif
+        worker.start { [weak self] update in
+            DispatchQueue.main.async {
+                self?.apply(update)
+            }
+        }
+        let worker = self.worker
+        do {
+            // Samples go from the audio thread to the speech queue. The main thread never decodes.
+            try capture.start { samples in
+                worker.push(samples)
+            }
+            listenStarted = Date()
+        } catch {
+            capture.stop()
+            worker.stop()
+            library.listening = false
+            mutate { $0.setListening(false); $0.microphoneDenied = true }
+            Task { await installer.setListening(false) }
+        }
+    }
+
+    private func apply(_ update: SpeechWorker.Update) {
+        guard engine.listening else { return }
+        var request: TranslationRequest?
+        mutate { engine in
+            engine.pushHypothesis(update.step.text, speakerRaw: update.speakerRaw, at: Date(), endpoint: update.step.endpoint)
+            request = engine.pendingTranslation
+        }
+        #if os(macOS)
+        if let request, !translationRunning {
+            translationRunning = true
+            runTranslation(request)
+        }
+        #endif
+    }
+
+    // MARK: Session actions
 
     func toggleNotes() {
         mutate { $0.notesHidden.toggle() }
@@ -183,6 +377,12 @@ final class SessionController: ObservableObject {
 
     func highlight() {
         mutate { $0.highlightCurrent(now: Date()) }
+        show("Pinned to Highlights")
+    }
+
+    func clearSession() {
+        guard !engine.listening else { return }
+        mutate { $0.clear() }
     }
 
     func beginRename(_ turnID: String) {
@@ -207,8 +407,45 @@ final class SessionController: ObservableObject {
         mutate { $0.notes.delete(itemID: id) }
     }
 
+    enum CopyPart {
+        case source
+        case translation
+        case both
+    }
+
+    func copy(turn: SessionTurn, part: CopyPart) {
+        let source = turn.sourceDisplay
+        let translation = turn.translationCommitted + turn.translationProvisional
+        switch part {
+        case .source: setPasteboard(source)
+        case .translation: setPasteboard(translation)
+        case .both: setPasteboard([source, translation].filter { !$0.isEmpty }.joined(separator: "\n"))
+        }
+        show(part == .translation ? "Translation copied" : part == .source ? "Detected text copied" : "Turn copied")
+    }
+
+    /// Whole session as plain text, one turn per paragraph.
+    func copyAll(_ part: CopyPart) {
+        let lines = engine.turns.compactMap { turn -> String? in
+            let speaker = engine.speakers.chipsVisible && !turn.speakerLabel.isEmpty ? "\(turn.speakerLabel): " : ""
+            let source = turn.sourceDisplay
+            let translation = turn.translationCommitted + turn.translationProvisional
+            switch part {
+            case .source: return source.isEmpty ? nil : speaker + source
+            case .translation: return translation.isEmpty ? nil : speaker + translation
+            case .both: return source.isEmpty ? nil : speaker + source + (translation.isEmpty ? "" : "\n" + translation)
+            }
+        }
+        setPasteboard(lines.joined(separator: "\n\n"))
+        show(part == .source ? "All detected text copied" : part == .translation ? "All translations copied" : "Transcript copied")
+    }
+
     func copyTranscript() {
-        let text = engine.saveDocument().plainText()
+        setPasteboard(engine.saveDocument().plainText())
+        show("Transcript copied")
+    }
+
+    private func setPasteboard(_ text: String) {
         #if os(macOS)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
@@ -217,16 +454,24 @@ final class SessionController: ObservableObject {
         #endif
     }
 
+    func show(_ message: String) {
+        toast = message
+        toastTask?.cancel()
+        toastTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_600_000_000)
+            guard !Task.isCancelled else { return }
+            self?.toast = nil
+        }
+    }
+
     func saveData() -> Data? {
         try? engine.saveDocument().jsonData()
     }
 
+    // MARK: Packs and models
+
     func select(packID: String) async {
-        if engine.listening {
-            capture.stop()
-            mutate { $0.stop(at: Date()); $0.setListening(false) }
-            await installer.setListening(false)
-        }
+        if engine.listening { stopListening() }
         #if os(macOS)
         await adoptProducedFiles(packID: packID)
         #endif
@@ -234,7 +479,8 @@ final class SessionController: ObservableObject {
         let installed = await installer.isInstalled(packID: packID, files: files)
         #if os(macOS)
         notesClient.packID = packID
-        notesClient.stop()
+        let client = notesClient
+        notesQueue.async { client.stop() }
         #endif
         mutate {
             $0.packID = packID
@@ -242,6 +488,79 @@ final class SessionController: ObservableObject {
             $0.preset = ChunkPolicy.preset(named: catalog.pack(id: packID)?.defaultPreset)
         }
         statusLine = installed ? "" : "\(engine.packName) is not on this machine."
+        await refreshInstall()
+    }
+
+    /// Use a downloaded model (or nil for the pack's own) for one task.
+    func choose(_ candidate: HubCandidate?, for task: ModelTask) {
+        if engine.listening { stopListening() }
+        library.select(candidate, for: task)
+        switch task {
+        case .thaiSpeech, .englishSpeech:
+            activeSpeechKey = nil
+            Task { await refreshInstall() }
+        case .translation:
+            #if os(macOS)
+            translator?.stop()
+            translator = nil
+            translatorStatus = .idle
+            prepareTranslator()
+            #endif
+        case .notes:
+            #if os(macOS)
+            notesClient.modelOverride = candidate.map { library.modelDirectory(for: $0) }
+            #endif
+        }
+    }
+
+    func deleteHubModel(_ candidate: HubCandidate) {
+        let wasSelected = library.selected(candidate.task) == candidate
+        library.delete(candidate)
+        if wasSelected { choose(nil, for: candidate.task) }
+    }
+
+    /// Opens a fresh download once to prove the runtime accepts it. Nil means it opened.
+    private func verifyRuntime(candidate: HubCandidate, directory: URL) async -> String? {
+        switch candidate.runtime {
+        case .sherpaStreaming:
+            #if os(macOS)
+            guard let language = candidate.task.speechLanguage,
+                  let executable = Bundle.main.executableURL else { return "Not a speech model." }
+            // sherpa-onnx exits the process on a graph it cannot use, so the first open
+            // happens in a child copy of this app, never in the session process.
+            return await withCheckedContinuation { continuation in
+                let probe = Process()
+                probe.executableURL = executable
+                probe.arguments = [
+                    "--probe-speech", directory.path,
+                    "--dim", String(candidate.featureDim),
+                    "--language", language == .thai ? "th" : "en",
+                ]
+                probe.standardOutput = FileHandle.nullDevice
+                probe.standardError = FileHandle.nullDevice
+                probe.terminationHandler = { process in
+                    continuation.resume(returning: process.terminationStatus == 0 ? nil : "sherpa-onnx could not stream with this graph.")
+                }
+                do {
+                    try probe.run()
+                } catch {
+                    continuation.resume(returning: "Could not start the model check.")
+                }
+            }
+            #else
+            return "ONNX streaming runs on the Mac build."
+            #endif
+        case .coreMLNemotron:
+            return await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .utility).async {
+                    let decoder = CoreMLNemotronDecoder(directory: directory)
+                    decoder?.close()
+                    continuation.resume(returning: decoder == nil ? "Core ML could not load the model." : nil)
+                }
+            }
+        case .mlx:
+            return MLXSupport.check(directory: directory)
+        }
     }
 
     func canDownload(_ pack: ModelPack) -> Bool {
@@ -264,8 +583,7 @@ final class SessionController: ObservableObject {
         }
         if await installer.isInstalled(packID: pack.id, files: files) {
             if pack.id == engine.packID {
-                mutate { $0.packInstalled = true }
-                statusLine = ""
+                await refreshInstall()
             }
             return
         }
@@ -290,94 +608,43 @@ final class SessionController: ObservableObject {
     }
 
     func deletePack(_ pack: ModelPack) async {
-        if engine.listening {
-            capture.stop()
-            #if os(macOS)
-            speech?.close()
-            speech = nil
-            #endif
-            mutate { $0.stop(at: Date()) }
-            await installer.setListening(false)
-            #if os(macOS)
-            if let request = engine.pendingTranslation, !translationRunning {
-                translationRunning = true
-                runTranslation(request)
-            } else if !translationRunning {
-                translator?.stop()
-                translator = nil
-            }
-            #endif
-        }
+        if engine.listening { stopListening() }
+        worker.evictAll()
+        activeSpeechKey = nil
         await installer.suppressAdopt(packID: pack.id)
         try? await installer.delete(packID: pack.id)
         await refreshInstall()
     }
 
-    private func beginCapture() {
-        preparingListen = true
-        Task {
-            await speakerLabeler.prepare()
-            preparingListen = false
-            guard !engine.listening else { return }
-            startListening()
-        }
-    }
-
-    private func startListening() {
-        mutate { $0.microphoneDenied = false; $0.setListening(true) }
-        guard engine.listening, engine.packInstalled else { return }
-        Task { await installer.setListening(true) }
-        #if os(macOS)
-        openSpeechGraph()
-        let chinda = ChindaTranslator()
-        if chinda.start() {
-            translator = chinda
-        }
-        #endif
-        do {
-            try capture.start { [weak self] samples in
-                Task { @MainActor in
-                    self?.keepInMemory(samples)
-                }
-            }
-        } catch {
-            capture.stop()
-            #if os(macOS)
-            speech?.close()
-            speech = nil
-            translator?.stop()
-            translator = nil
-            #endif
-            mutate { $0.setListening(false); $0.microphoneDenied = true }
-            Task { await installer.setListening(false) }
-        }
-    }
-
-    /// The buffer lives on the heap. A missing pack never reaches this, and a
-    /// missing graph does not invent a partial. With a graph, the same samples
-    /// go through the cache-aware stream and the ChindaMT scheduler.
-    private func keepInMemory(_ samples: [Float]) {
-        guard engine.packInstalled, engine.listening else { return }
-        #if os(macOS)
-        guard var decoder = speech else { return }
-        #else
-        var decoder = MissingSpeechDecoder()
-        #endif
-        var labeler = speakerLabeler
-        var request: TranslationRequest?
-        mutate { engine in
-            request = ListenFeed.push(samples: samples, engine: &engine, decoder: &decoder, labeler: &labeler, at: Date())
-        }
-        #if os(macOS)
-        if let request, !translationRunning {
-            translationRunning = true
-            runTranslation(request)
-        }
-        #endif
-    }
+    // MARK: Translation
 
     #if os(macOS)
+    private var translatorModel: URL? {
+        if let candidate = library.selected(.translation) {
+            return library.modelDirectory(for: candidate)
+        }
+        return OnDevicePaths.translatorDirectory(packID: engine.packID)
+    }
+
+    /// Starts the MLX translator early so its weights are on the GPU before the first turn.
+    private func prepareTranslator() {
+        guard translator == nil, engine.packInstalled, let model = translatorModel else {
+            if translator == nil, engine.packInstalled, translatorModel == nil {
+                translatorStatus = .failed("No translation model on this Mac.")
+            }
+            return
+        }
+        let chinda = ChindaTranslator()
+        if chinda.start(model: model) {
+            translator = chinda
+            translatorStatus = .ready("\(model.lastPathComponent) · \(ModelRuntime.mlx.accelerator)")
+        } else {
+            translatorStatus = .failed("The MLX runtime is not in this build.")
+        }
+    }
+
     private func runTranslation(_ request: TranslationRequest) {
+        if translator == nil { prepareTranslator() }
         guard let translator else {
             translationRunning = false
             mutate { _ = $0.deliverTranslation(generation: request.generation, text: "", at: Date()) }
@@ -403,21 +670,45 @@ final class SessionController: ObservableObject {
             return
         }
         translationRunning = false
-        if !engine.listening {
-            translator?.stop()
-            translator = nil
-        }
+    }
+
+    private func shutdown() {
+        capture.stop()
+        worker.stop()
+        worker.evictAll()
+        translator?.stop()
+        translator = nil
+        notesClient.stop()
     }
     #endif
 
+    // MARK: Engine
+
     private func tick() {
+        // Only touch the published engine when a notes pass is actually due.
+        guard engine.notes.isDue(now: Date()) else { return }
         mutate { $0.tick(now: Date()) }
     }
 
     private func mutate(_ body: (inout SessionEngine) -> Void) {
         var copy = engine
         body(&copy)
+        let pass = copy.notes.takeRequestedPass()
         engine = copy
+        if let pass { runNotesPass(pass) }
+    }
+
+    private func runNotesPass(_ input: NotesInput) {
+        let model = engine.notes.model
+        notesRunning = true
+        notesQueue.async { [weak self] in
+            let draft = model(input)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.notesRunning = false
+                self.mutate { $0.notes.finishDeferredPass(draft, now: Date()) }
+            }
+        }
     }
 
     private func pinnedFiles(packID: String) -> [PackFileSpec] {
@@ -473,3 +764,56 @@ struct MissingSpeechDecoder: PartialDecoding {
         return StreamStep(text: "", endpoint: false)
     }
 }
+
+#if DEBUG
+extension SessionController {
+    /// A session with two turns, for previews only.
+    static func demo() -> SessionController? {
+        let catalog = (try? ModelCatalog.loadFromBundle())
+            ?? OnDevicePreviewCatalog.load()
+        guard let catalog else { return nil }
+        let controller = SessionController(
+            catalog: catalog,
+            packID: PackPolicy.macPackID,
+            platform: "macos",
+            storage: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("lt-preview")
+        )
+        controller.loadDemo()
+        return controller
+    }
+
+    func stopDemoListening() {
+        mutate { $0.listening = false }
+    }
+
+    func loadDemo() {
+        let start = Date()
+        mutate { engine in
+            engine.direction = .englishToThai
+            engine.packInstalled = true
+            engine.setListening(true)
+            engine.pushHypothesis("Meeting starts at nine. Please send the notes today.", speakerRaw: 0, at: start, endpoint: true)
+            if let request = engine.pendingTranslation {
+                engine.deliverTranslation(generation: request.generation, text: "การประชุมเริ่มเวลา 09.00 น. กรุณาส่งบันทึกการประชุมในวันนี้", at: start)
+            }
+            engine.pushHypothesis("We decided to ship the translation on this", speakerRaw: 1, at: start.addingTimeInterval(4), endpoint: false)
+            engine.pushHypothesis("We decided to ship the translation on this machine", speakerRaw: 1, at: start.addingTimeInterval(4.2), endpoint: false)
+            if let request = engine.pendingTranslation {
+                engine.deliverTranslation(generation: request.generation, text: "เราตัดสินใจที่จะส่งการแปล", at: start)
+            }
+        }
+        speechStatus = .ready("Nemotron EN · Neural Engine · Core ML")
+        translatorStatus = .ready("chindamt-4b-bf16 · GPU · Metal (MLX)")
+        listenStarted = start.addingTimeInterval(-42)
+    }
+}
+
+enum OnDevicePreviewCatalog {
+    static func load() -> ModelCatalog? {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/model-catalog.json")
+        return try? ModelCatalog.load(from: url)
+    }
+}
+#endif

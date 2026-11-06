@@ -38,8 +38,12 @@ struct TurnBuilder {
             return snapshot
         }
         if endpoint {
-            if hypothesis.hasPrefix(prefix) {
+            // The recognizer's final text is the turn. An empty final keeps what was shown.
+            let final = hypothesis.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !final.isEmpty {
                 prefix = hypothesis
+            } else {
+                prefix += tail
             }
             tail = ""
             committed = true
@@ -49,9 +53,19 @@ struct TurnBuilder {
         }
 
         var nextPrefix = prefix
+        // English output carries punctuation and casing that the recognizer revises
+        // ("nine," becomes "nine. Please"). A revision that keeps most of the committed
+        // prefix pulls the prefix back to the agreement, so the turn keeps streaming.
+        // A hypothesis that contradicts nearly all of it is treated as a glitch.
+        if !hypothesis.hasPrefix(prefix) {
+            let agreement = Self.commonPrefix(prefix, hypothesis)
+            if agreement.count * 2 >= prefix.count {
+                nextPrefix = agreement
+            }
+        }
         if havePrevious {
             let agreement = Self.commonPrefix(previous, hypothesis)
-            if agreement.count > prefix.count, agreement.hasPrefix(prefix) {
+            if agreement.count > nextPrefix.count, agreement.hasPrefix(nextPrefix) {
                 nextPrefix = agreement
             }
             if hypothesis == previous,

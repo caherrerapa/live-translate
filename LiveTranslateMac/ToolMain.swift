@@ -12,6 +12,16 @@ enum LiveTranslateMain {
             NotesCLI.main()
         } else if args.contains("--diarize") {
             DiarizeCLI.main()
+        } else if args.contains("--session") {
+            SessionCLI.main()
+        } else if args.contains("--probe-speech") {
+            ProbeCLI.main()
+        } else if args.contains("--hub-search") {
+            HubSearchCLI.main()
+        } else if args.contains("--snapshot") {
+            #if DEBUG
+            SnapshotCLI.main()
+            #endif
         } else {
             LiveTranslateApp.main()
         }
@@ -296,3 +306,239 @@ enum DiarizeCLI {
         }
     }
 }
+
+/// Streams a recording through the same path Listen uses: the speech worker on its
+/// own queue, the session engine, and the MLX translator. Prints each committed turn
+/// with its translation. `--session --audio file.wav --language en|th [--hub dir --dim 80]`
+enum SessionCLI {
+    static func main() {
+        let args = CommandLine.arguments
+        func value(_ flag: String) -> String? {
+            guard let index = args.firstIndex(of: flag), index + 1 < args.count else { return nil }
+            return args[index + 1]
+        }
+        guard let audio = value("--audio"), let samples = try? Wav.read(URL(fileURLWithPath: audio)),
+              let catalog = try? CatalogFiles.load() else {
+            fputs("usage: --session --audio file.wav --language en|th\n", stderr)
+            exit(2)
+        }
+        let language: SpeechLanguage = value("--language") == "th" ? .thai : .english
+        var engine = SessionEngine(
+            catalog: catalog,
+            packID: PackPolicy.macPackID,
+            packInstalled: true,
+            notes: NotesReducer { _ in
+                NotesDraft(title: "", titleTurnID: "", summary: [], decisions: [], actions: [], openQuestions: [])
+            }
+        )
+        engine.direction = language == .thai ? .thaiToEnglish : .englishToThai
+        let chunk = engine.chunkMilliseconds() ?? 0
+        let loadStart = Date()
+        let decoder: LiveSpeechDecoder?
+        if let hub = value("--hub") {
+            let url = URL(fileURLWithPath: hub)
+            if value("--runtime") == "coreml" {
+                decoder = CoreMLNemotronDecoder(directory: url)
+            } else {
+                let dim = Int(value("--dim") ?? "80") ?? 80
+                decoder = SherpaStreamingDecoder(directory: url, language: language, featureDim: dim, prompted: dim == 128)
+            }
+        } else {
+            decoder = SherpaStreamingDecoder(
+                language: language,
+                chunkMS: chunk,
+                precision: "full",
+                installRoot: URL(fileURLWithPath: NSTemporaryDirectory()),
+                packID: PackPolicy.macPackID
+            )
+        }
+        guard let decoder else {
+            fputs("speech_graph_missing\n", stderr)
+            exit(3)
+        }
+        print(String(format: "speech_load_s %.2f engine %@", Date().timeIntervalSince(loadStart), decoder.engineLabel))
+        let translator = ChindaTranslator()
+        guard translator.start() else {
+            fputs("translator_missing\n", stderr)
+            exit(4)
+        }
+        engine.setListening(true)
+        let worker = SpeechWorker()
+        worker.activate(key: "cli", make: { decoder }, completion: { _ in })
+        let updates = DispatchQueue(label: "cli.updates")
+        var pending: [SpeechWorker.Update] = []
+        worker.start { update in updates.sync { pending.append(update) } }
+        // Feed the recording at real-time speed in 20 ms buffers, plus 3 s of silence for the endpoint.
+        let tail = [Float](repeating: 0, count: 48_000)
+        let all = samples + tail
+        let hop = 320
+        let started = Date()
+        var offset = 0
+        var cpuStart = rusage()
+        getrusage(RUSAGE_SELF, &cpuStart)
+        while offset < all.count {
+            let end = min(offset + hop, all.count)
+            worker.push(Array(all[offset..<end]))
+            offset = end
+            let due = started.addingTimeInterval(Double(offset) / 16_000)
+            let wait = due.timeIntervalSinceNow
+            if wait > 0 { Thread.sleep(forTimeInterval: wait) }
+            let batch = updates.sync { () -> [SpeechWorker.Update] in defer { pending.removeAll() }; return pending }
+            for update in batch {
+                engine.pushHypothesis(update.step.text, speakerRaw: nil, at: Date(), endpoint: update.step.endpoint)
+            }
+            drain(&engine, translator)
+        }
+        // Let the speech queue finish the buffers already handed to it, then apply what it emitted.
+        Thread.sleep(forTimeInterval: 1.0)
+        let last = updates.sync { () -> [SpeechWorker.Update] in defer { pending.removeAll() }; return pending }
+        for update in last {
+            engine.pushHypothesis(update.step.text, speakerRaw: nil, at: Date(), endpoint: update.step.endpoint)
+        }
+        drain(&engine, translator)
+        worker.stop()
+        engine.stop(at: Date())
+        drain(&engine, translator)
+        var cpuEnd = rusage()
+        getrusage(RUSAGE_SELF, &cpuEnd)
+        let cpu = Double(cpuEnd.ru_utime.tv_sec - cpuStart.ru_utime.tv_sec) + Double(cpuEnd.ru_utime.tv_usec - cpuStart.ru_utime.tv_usec) / 1e6
+        let audioSeconds = Double(all.count) / 16_000
+        for turn in engine.turns {
+            print("turn \(turn.id) source: \(turn.sourcePrefix)")
+            print("turn \(turn.id) translation: \(turn.translationCommitted)")
+        }
+        print(String(format: "audio_s %.2f speech_cpu_core_fraction %.2f", audioSeconds, cpu / audioSeconds))
+        translator.stop()
+        let complete = engine.turns.contains { !$0.translationCommitted.isEmpty }
+        exit(complete ? 0 : 5)
+    }
+
+    /// Runs pending translations to completion, the way the controller chains them.
+    private static func drain(_ engine: inout SessionEngine, _ translator: ChindaTranslator) {
+        while let request = engine.pendingTranslation ?? engine.retryTranslation(at: Date()) {
+            let semaphore = DispatchSemaphore(value: 0)
+            var result = (request.generation, "")
+            translator.translate(generation: request.generation, prompt: request.prompt) { generation, text in
+                result = (generation, text)
+                semaphore.signal()
+            }
+            // The translator answers on the main queue; spin it while waiting.
+            while semaphore.wait(timeout: .now()) == .timedOut {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            }
+            print("translate \(request.endpoint ? "flush" : "prefix") \"\(request.source)\" -> \"\(result.1)\"")
+            _ = engine.deliverTranslation(generation: result.0, text: result.1, at: Date())
+        }
+    }
+}
+
+/// Opens a downloaded sherpa graph and streams a second of silence. Exit 0 means
+/// it loads. Run as a child process, because sherpa-onnx exits on a bad graph.
+enum ProbeCLI {
+    static func main() {
+        let args = CommandLine.arguments
+        func value(_ flag: String) -> String? {
+            guard let index = args.firstIndex(of: flag), index + 1 < args.count else { return nil }
+            return args[index + 1]
+        }
+        guard let path = value("--probe-speech") else { exit(2) }
+        let dim = Int(value("--dim") ?? "80") ?? 80
+        let language: SpeechLanguage = value("--language") == "th" ? .thai : .english
+        guard let decoder = SherpaStreamingDecoder(
+            directory: URL(fileURLWithPath: path),
+            language: language,
+            featureDim: dim,
+            prompted: dim == 128
+        ) else { exit(3) }
+        _ = decoder.decode([Float](repeating: 0, count: 16_000))
+        decoder.close()
+        exit(0)
+    }
+}
+
+/// Prints what the model screen would list for each task.
+enum HubSearchCLI {
+    static func main() {
+        Task { @MainActor in
+            let library = ModelLibrary(storage: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("lt-hub-cli"))
+            let args = CommandLine.arguments
+            if let index = args.firstIndex(of: "--install"), index + 1 < args.count {
+                // Download, hash-check, install and probe one English candidate, as the model screen does.
+                let repo = args[index + 1]
+                library.verifyInstall = { candidate, directory in
+                    let probe = Process()
+                    probe.executableURL = Bundle.main.executableURL
+                    probe.arguments = ["--probe-speech", directory.path, "--dim", String(candidate.featureDim), "--language", "en"]
+                    try? probe.run()
+                    probe.waitUntilExit()
+                    return probe.terminationStatus == 0 ? nil : "probe failed"
+                }
+                await library.search(.englishSpeech)
+                guard let candidate = library.results[.englishSpeech]?.first(where: { $0.repo == repo }) else {
+                    print("not listed \(repo)")
+                    exit(1)
+                }
+                library.download(candidate)
+                while true {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    let status = library.status(of: candidate)
+                    print("status \(status)")
+                    if status == .installed {
+                        print("installed \(library.modelDirectory(for: candidate).path) selected=\(library.selected(.englishSpeech)?.repo ?? "none")")
+                        exit(0)
+                    }
+                    if case .failed = status { exit(1) }
+                }
+            }
+            for task in ModelTask.allCases {
+                await library.search(task)
+                print("== \(task.title)\(library.searchErrors[task].map { " error: \($0)" } ?? "")")
+                for candidate in library.results[task] ?? [] {
+                    let size = ByteCountFormatter.string(fromByteCount: candidate.totalBytes, countStyle: .file)
+                    print("  \(candidate.repo)  [\(candidate.runtime.accelerator)]  \(size)  files=\(candidate.files.count) dim=\(candidate.featureDim)")
+                }
+            }
+            exit(0)
+        }
+        RunLoop.main.run()
+    }
+}
+
+#if DEBUG
+import AppKit
+import SwiftUI
+
+/// Renders a screen offscreen to a PNG: `--snapshot out.png [--models]`. Debug builds only.
+enum SnapshotCLI {
+    static func main() {
+        let args = CommandLine.arguments
+        guard let index = args.firstIndex(of: "--snapshot"), index + 1 < args.count else { exit(2) }
+        let output = URL(fileURLWithPath: args[index + 1])
+        let app = NSApplication.shared
+        app.setActivationPolicy(.prohibited)
+        MainActor.assumeIsolated {
+            guard let controller = SessionController.demo() else { exit(3) }
+            let models = args.contains("--models")
+            if models { controller.stopDemoListening() }
+            let size = models ? NSSize(width: 820, height: 640) : NSSize(width: 1280, height: 640)
+            let root: AnyView = models
+                ? AnyView(ModelScreen(controller: controller, library: controller.library))
+                : AnyView(SessionScreen(controller: controller, shell: .mac, landscape: false, regularWidth: true))
+            let host = NSHostingView(rootView: root.frame(width: size.width, height: size.height))
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
+            window.contentView = host
+            window.orderBack(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + (models ? 25 : 3)) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    host.layoutSubtreeIfNeeded()
+                    guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { exit(4) }
+                    host.cacheDisplay(in: host.bounds, to: rep)
+                    try? rep.representation(using: .png, properties: [:])?.write(to: output)
+                    exit(0)
+                }
+            }
+        }
+        app.run()
+    }
+}
+#endif

@@ -131,11 +131,63 @@ private func lt_push(
 @_silgen_name("lt_close")
 private func lt_close(_ handle: OpaquePointer)
 
+@_silgen_name("lt_open_ex")
+private func lt_open_ex(
+    _ encoder: UnsafePointer<CChar>,
+    _ decoder: UnsafePointer<CChar>,
+    _ joiner: UnsafePointer<CChar>,
+    _ tokens: UnsafePointer<CChar>,
+    _ language: UnsafePointer<CChar>,
+    _ featureDim: Int32,
+    _ threads: Int32
+) -> OpaquePointer?
+
+@_silgen_name("lt_reset")
+private func lt_reset(_ handle: OpaquePointer)
+
+extension OnDevicePaths {
+    /// encoder / decoder / joiner / tokens inside a downloaded sherpa folder.
+    /// File names vary by repo (encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx).
+    static func sherpaGraph(in directory: URL) -> (encoder: URL, decoder: URL, joiner: URL, tokens: URL)? {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        func pick(_ role: String) -> URL? {
+            let options = names.filter { $0.hasPrefix(role) && $0.hasSuffix(".onnx") }.sorted()
+            return (options.first { $0.contains(".int8.") } ?? options.first).map { directory.appendingPathComponent($0) }
+        }
+        guard let encoder = pick("encoder"), let decoder = pick("decoder"), let joiner = pick("joiner"),
+              names.contains("tokens.txt") else { return nil }
+        return (encoder, decoder, joiner, directory.appendingPathComponent("tokens.txt"))
+    }
+}
+
 /// Cache-aware sherpa stream linked into the app. Thai and English share this loop.
-final class SherpaStreamingDecoder: PartialDecoding {
+final class SherpaStreamingDecoder: PartialDecoding, LiveSpeechDecoder {
     let graphDirectory: URL
+    let engineLabel = ModelRuntime.sherpaStreaming.accelerator
     private let handle: OpaquePointer
     private var closed = false
+
+    /// A downloaded Hub folder. Zipformer graphs take no language prompt and 80 mel bins.
+    init?(directory: URL, language: SpeechLanguage, featureDim: Int, prompted: Bool) {
+        guard let graph = OnDevicePaths.sherpaGraph(in: directory) else { return nil }
+        let prompt = prompted ? language.prompt : ""
+        // Half the performance cores keep a chunk well under real time and leave room for the UI and MLX.
+        let threads = Int32(max(2, min(4, ProcessInfo.processInfo.activeProcessorCount / 2)))
+        let opened = graph.encoder.path.withCString { encoder in
+            graph.decoder.path.withCString { decoder in
+                graph.joiner.path.withCString { joiner in
+                    graph.tokens.path.withCString { tokens in
+                        prompt.withCString { language in
+                            lt_open_ex(encoder, decoder, joiner, tokens, language, Int32(featureDim), threads)
+                        }
+                    }
+                }
+            }
+        }
+        guard let opened else { return nil }
+        handle = opened
+        graphDirectory = directory
+    }
 
     init?(language: SpeechLanguage, chunkMS: Int, precision: String, installRoot: URL, packID: String) {
         guard let graph = OnDevicePaths.speechGraph(
@@ -176,10 +228,24 @@ final class SherpaStreamingDecoder: PartialDecoding {
         return StreamStep(text: String(cString: bytes), endpoint: endpoint == 1)
     }
 
+    func decode(_ samples: [Float]) -> StreamStep {
+        guard !closed else { return StreamStep(text: "", endpoint: false) }
+        return decode(pcm: samples)
+    }
+
+    func reset() {
+        guard !closed else { return }
+        lt_reset(handle)
+    }
+
     func close() {
         guard !closed else { return }
         closed = true
         lt_close(handle)
+    }
+
+    deinit {
+        close()
     }
 }
 
@@ -195,11 +261,18 @@ final class ChindaTranslator {
     private var pendingGeneration: Int?
     private var queued: (Int, String)?
 
-    func start() -> Bool {
+    private(set) var modelDirectory: URL?
+
+    var isRunning: Bool {
+        queue.sync { process != nil && !dead }
+    }
+
+    func start(model: URL? = nil) -> Bool {
         guard process == nil,
               let python = OnDevicePaths.python(),
               let script = OnDevicePaths.chindaScript(),
-              let model = OnDevicePaths.translatorDirectory() else { return false }
+              let model = model ?? OnDevicePaths.translatorDirectory() else { return false }
+        modelDirectory = model
         let process = Process()
         process.executableURL = python
         process.arguments = [script.path, model.path]

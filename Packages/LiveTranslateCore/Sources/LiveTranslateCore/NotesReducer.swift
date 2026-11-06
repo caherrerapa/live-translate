@@ -101,6 +101,13 @@ struct NotesReducer {
     private var stopArmed = false
     private var stopFinished = false
     private var deletedIDs: Set<String> = []
+    /// When true, a pass does not call `model` inline. It leaves the input in
+    /// `requestedPass` for the app to run off the main thread, then the app
+    /// calls `finishDeferredPass`. A notes model takes seconds; the UI must not wait.
+    var defersModel = false
+    private(set) var requestedPass: NotesInput?
+    private(set) var passRunning = false
+    private var rerunReason: NotesPassReason?
 
     static let emptyLine = "Notes appear as the conversation commits."
     static let wordThreshold = 120
@@ -145,6 +152,12 @@ struct NotesReducer {
         note.highlights.append(
             NoteItem(id: "highlight-\(turnID)", text: text, turnID: turnID, speaker: speaker, tentative: false)
         )
+    }
+
+    /// True when `tick` would run a pass. Lets the app skip republishing the session every second.
+    func isDue(now: Date) -> Bool {
+        guard !translationInFlight, !stopFinished, let due else { return false }
+        return now >= due
     }
 
     mutating func tick(now: Date) {
@@ -195,8 +208,18 @@ struct NotesReducer {
             due = nil
             return
         }
-        let draft = model(NotesInput(note: note, turns: pending))
-        apply(draft)
+        if defersModel {
+            if passRunning {
+                // One pass at a time. The newest reason runs when this one lands.
+                if rerunReason != .stop { rerunReason = reason }
+                return
+            }
+            requestedPass = NotesInput(note: note, turns: pending)
+            passRunning = true
+        } else {
+            let draft = model(NotesInput(note: note, turns: pending))
+            apply(draft)
+        }
         let pendingIDs = Set(pending.map(\.id))
         for index in turns.indices where pendingIDs.contains(turns[index].id) {
             turns[index].folded = true
@@ -209,6 +232,22 @@ struct NotesReducer {
         wordsSincePass = 0
         due = nil
         _ = now
+    }
+
+    /// Hands the waiting pass to the caller once.
+    mutating func takeRequestedPass() -> NotesInput? {
+        defer { requestedPass = nil }
+        return requestedPass
+    }
+
+    mutating func finishDeferredPass(_ draft: NotesDraft, now: Date) {
+        guard passRunning else { return }
+        passRunning = false
+        apply(draft)
+        if let reason = rerunReason {
+            rerunReason = nil
+            runPass(reason: reason, now: now)
+        }
     }
 
     private mutating func apply(_ draft: NotesDraft) {

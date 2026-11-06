@@ -3,8 +3,17 @@ import Foundation
 
 /// Typhoon 2 notes. One local process, text in and text out. The production
 /// pass in `NotesProductionPass` decides what is stored.
-final class TyphoonNotesClient {
+final class TyphoonNotesClient: @unchecked Sendable {
     var packID = PackPolicy.macPackID
+    /// A notes model picked from Hugging Face. Nil uses the pack's model.
+    var modelOverride: URL? {
+        get { overrideLock.lock(); defer { overrideLock.unlock() }; return override }
+        set { overrideLock.lock(); override = newValue; overrideLock.unlock() }
+    }
+    /// Separate from `lock`, which a notes pass holds for seconds. The main thread only touches this one.
+    private let overrideLock = NSLock()
+    private var override: URL?
+    private var runningModel: URL?
     private let lock = NSLock()
     private var process: Process?
     private var input: FileHandle?
@@ -48,12 +57,18 @@ final class TyphoonNotesClient {
     }
 
     private func startIfNeeded() -> Bool {
-        if let process, process.isRunning { return true }
+        let wanted = modelOverride ?? OnDevicePaths.notesDirectory(packID: packID)
+        if let process, process.isRunning, runningModel == wanted { return true }
+        if let process {
+            process.terminate()
+            self.process = nil
+        }
         guard let python = OnDevicePaths.python(),
               let script = OnDevicePaths.chindaScript(),
-              let model = OnDevicePaths.notesDirectory(packID: packID) else {
+              let model = wanted else {
             return false
         }
+        runningModel = model
         let process = Process()
         process.executableURL = python
         process.arguments = [script.path, model.path]

@@ -37,11 +37,14 @@ def main() -> None:
             add_generation_prompt=True,
             tokenize=False,
         )
+        # Thai needs several tokens per English word. A fixed 80-token cap cut long
+        # English turns off mid-sentence, so the budget scales with the source.
+        budget = message.get("max_tokens") or min(512, 64 + 3 * len(tokenizer.encode(body)))
         raw = generate(
             model,
             tokenizer,
             formatted,
-            max_tokens=int(message.get("max_tokens") or 80),
+            max_tokens=int(budget),
             sampler=sampler,
             verbose=False,
         )

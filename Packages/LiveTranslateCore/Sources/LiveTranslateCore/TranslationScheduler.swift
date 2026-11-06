@@ -88,9 +88,8 @@ struct TranslationScheduler {
     /// The next recognizer chunk. An unchanged provisional translation commits.
     mutating func noteChunk() {
         guard !inFlight, sawDelivery, !provisional.isEmpty else { return }
-        guard provisional == lastDelivered else { return }
-        guard committed.isEmpty || provisional.hasPrefix(committed) else { return }
-        committed = provisional
+        guard committed + provisional == lastDelivered else { return }
+        committed = lastDelivered
         provisional = ""
     }
 
@@ -101,25 +100,41 @@ struct TranslationScheduler {
         if generation == invalidatedGeneration {
             return false
         }
-        sawDelivery = true
-        lastDelivered = translation
+        let text = translation.trimmingCharacters(in: .whitespacesAndNewlines)
         if endpoint {
-            if committed.isEmpty || translation.hasPrefix(committed) {
-                committed = translation
-                provisional = ""
+            // The flush is the translation of the whole turn. It replaces the partials.
+            // A failed call (empty text) keeps what was already shown.
+            if !text.isEmpty {
+                committed = text
+            } else {
+                committed += provisional
             }
+            provisional = ""
+            sawDelivery = true
+            lastDelivered = committed
             endpointSatisfied = true
             return true
         }
-        if committed.isEmpty || translation.hasPrefix(committed) {
-            provisional = String(translation.dropFirst(committed.count))
-            if provisional.isEmpty {
-                provisional = translation == committed ? "" : translation
-            }
-            // Keep the full latest translation as the provisional line until it commits.
-            provisional = translation
+        guard !text.isEmpty else { return true }
+        sawDelivery = true
+        lastDelivered = text
+        // A translation of a longer prefix is free to reword the earlier words.
+        // The committed part keeps only what the new translation still agrees with,
+        // so the panel always reads as the latest translation and never drops it.
+        if !text.hasPrefix(committed) {
+            committed = Self.commonPrefix(committed, text)
         }
+        provisional = String(text.dropFirst(committed.count))
         return true
+    }
+
+    private static func commonPrefix(_ left: String, _ right: String) -> String {
+        var count = 0
+        for (a, b) in zip(left, right) {
+            if a != b { break }
+            count += 1
+        }
+        return String(left.prefix(count))
     }
 
     private static func due(

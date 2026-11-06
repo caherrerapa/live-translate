@@ -20,6 +20,7 @@ typedef struct LTStream {
 } LTStream;
 
 void lt_close(LTStream *handle);
+void lt_reset(LTStream *handle);
 
 static char *lt_dup(const char *text) {
     if (!text) {
@@ -33,12 +34,14 @@ static char *lt_dup(const char *text) {
     return copy;
 }
 
-LTStream *lt_open(
+LTStream *lt_open_ex(
     const char *encoder,
     const char *decoder,
     const char *joiner,
     const char *tokens,
-    const char *language
+    const char *language,
+    int32_t feature_dim,
+    int32_t num_threads
 ) {
     LTStream *handle = calloc(1, sizeof(*handle));
     if (!handle) {
@@ -59,12 +62,13 @@ LTStream *lt_open(
     SherpaOnnxOnlineRecognizerConfig config;
     memset(&config, 0, sizeof(config));
     config.feat_config.sample_rate = 16000;
-    config.feat_config.feature_dim = 128;
+    /* NeMo FastConformer graphs take 128 mel bins. sherpa Zipformer graphs take 80. */
+    config.feat_config.feature_dim = feature_dim > 0 ? feature_dim : 128;
     config.model_config.transducer.encoder = handle->encoder;
     config.model_config.transducer.decoder = handle->decoder;
     config.model_config.transducer.joiner = handle->joiner;
     config.model_config.tokens = handle->tokens;
-    config.model_config.num_threads = 4;
+    config.model_config.num_threads = num_threads > 0 ? num_threads : 4;
     config.model_config.provider = handle->provider;
     config.decoding_method = handle->method;
     config.enable_endpoint = 1;
@@ -84,6 +88,27 @@ LTStream *lt_open(
     }
     SherpaOnnxOnlineStreamSetOption(handle->stream, "language", handle->language);
     return handle;
+}
+
+LTStream *lt_open(
+    const char *encoder,
+    const char *decoder,
+    const char *joiner,
+    const char *tokens,
+    const char *language
+) {
+    return lt_open_ex(encoder, decoder, joiner, tokens, language, 128, 4);
+}
+
+/* Starts a new utterance on a loaded recognizer. The weights stay resident. */
+void lt_reset(LTStream *handle) {
+    if (!handle) {
+        return;
+    }
+    SherpaOnnxOnlineStreamReset(handle->recognizer, handle->stream);
+    if (handle->language && handle->language[0]) {
+        SherpaOnnxOnlineStreamSetOption(handle->stream, "language", handle->language);
+    }
 }
 
 int lt_push(
@@ -121,8 +146,7 @@ int lt_push(
         if (endpoint) {
             *endpoint = 1;
         }
-        SherpaOnnxOnlineStreamReset(handle->recognizer, handle->stream);
-        SherpaOnnxOnlineStreamSetOption(handle->stream, "language", handle->language);
+        lt_reset(handle);
     }
     return 0;
 }

@@ -90,7 +90,9 @@ struct SessionEngine {
         turnsAwaitingTranslation.removeAll()
         retryTurnID = nil
         speakers.clear()
+        let defers = notes.defersModel
         notes = NotesReducer(model: notes.model)
+        notes.defersModel = defers
         pendingTranslation = nil
         focusedTurnID = nil
         nextTurnNumber = 1
@@ -120,6 +122,18 @@ struct SessionEngine {
     ) -> TurnSnapshot {
         if sessionStarted == nil {
             sessionStarted = now
+        }
+        // Silence produces empty hypotheses and empty endpoints. They must not open
+        // or commit blank turns; an open turn with no words is dropped instead.
+        let blank = hypothesis.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let openTurnIsBlank = turns.last.map { !$0.committed && $0.sourcePrefix.isEmpty && $0.sourceTail.isEmpty } ?? false
+        if blank && (turns.isEmpty || turns[turns.count - 1].committed || openTurnIsBlank) {
+            if endpoint && openTurnIsBlank, let id = turns.last?.id {
+                turns.removeLast()
+                builders[id] = nil
+                schedulers[id] = nil
+            }
+            return TurnSnapshot(prefix: "", tail: "", committed: false)
         }
         // A missing diarizer slot must not reserve a raw id. Slot 0 is the first speaker.
         let ordinal: Int?

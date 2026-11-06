@@ -271,7 +271,8 @@ final class LiveTranslateCoreTests: XCTestCase {
             endpoint: false
         )
         XCTAssertTrue(scheduler.deliver(generation: third?.generation ?? 0, translation: "คนละเรื่อง", endpoint: false))
-        XCTAssertEqual(scheduler.committed, "สวัสดี")
+        // A reworded translation of the longer prefix replaces the line instead of being dropped.
+        XCTAssertEqual(scheduler.committed + scheduler.provisional, "คนละเรื่อง")
 
         let thai = String(repeating: "ก", count: 11)
         var thaiScheduler = TranslationScheduler()
@@ -751,33 +752,29 @@ final class LiveTranslateCoreTests: XCTestCase {
         XCTAssertTrue(phoneBody.contains("chrome.bottomProminent"))
         XCTAssertTrue(phoneBody.contains("chrome.bottomBeside"))
         XCTAssertTrue(phoneBody.contains("chrome.pageSwitch"))
-        let macBar = try sourceSlice(source, from: "private var macBar", to: "private var moreButton")
-        XCTAssertTrue(macBar.contains("ForEach(chrome.alwaysVisible"))
-        XCTAssertTrue(macBar.contains("chrome.secondary"))
-        XCTAssertTrue(macBar.contains("chrome.prominent"))
-        for peer in ["Highlight", "Models", "Copy", "Save", "Fast", "Balanced", "Accurate", "Type"] {
-            XCTAssertFalse(macBar.contains(peer), peer)
-        }
-        XCTAssertTrue(source.contains("control == chrome.prominent"))
-        XCTAssertTrue(source.contains("Stepper(\"Type\""))
-        let typeLine = source.split(separator: "\n").first { $0.contains("Stepper(\"Type\"") }.map(String.init) ?? ""
-        XCTAssertFalse(typeLine.isEmpty)
-        XCTAssertFalse(typeLine.contains("labelsHidden"))
-        XCTAssertTrue(source.contains("Button(\"Models\") { controller.showModels = true }"))
-        XCTAssertTrue(source.contains("Button(\"Settings\", action: controller.openSettings)"))
+        // Mac: direction and Listen lead the bar; every secondary control is one click away, not in a popover.
+        let macBar = try sourceSlice(source, from: "private var macBar", to: "private func barButton")
+        XCTAssertTrue(macBar.contains("directionPicker"))
+        XCTAssertTrue(macBar.contains("listenButton"))
+        XCTAssertTrue(macBar.contains("ForEach(chrome.secondary"))
+        XCTAssertTrue(source.contains("controller.showModels = true"))
+        XCTAssertTrue(source.contains("controller.openSettings"))
         XCTAssertTrue(source.contains("controller.highlight"))
         XCTAssertTrue(source.contains("controller.copyTranscript"))
+        XCTAssertTrue(source.contains("controller.copyAll(.source)"))
+        XCTAssertTrue(source.contains("controller.copy(turn: turn, part: part)"))
+        XCTAssertTrue(source.contains(".textSelection(.enabled)"))
         XCTAssertTrue(source.contains("controller.exportPresented = true"))
         XCTAssertTrue(source.contains("controller.toggleSpeakers"))
         XCTAssertTrue(source.contains("controller.toggleNotes"))
         XCTAssertTrue(source.contains(".disabled(controller.engine.listening)"))
-        XCTAssertTrue(source.contains("!controller.engine.listenEnabled && !controller.engine.listening"))
+        XCTAssertTrue(source.contains("controller.engine.listenEnabled && controller.engine.packInstalled"))
         XCTAssertTrue(source.contains("ListenPolicy.idleLine"))
         XCTAssertTrue(source.contains("NotesReducer.emptyLine"))
         XCTAssertTrue(source.contains("turn.sourcePrefix"))
         XCTAssertTrue(source.contains("turn.sourceTail"))
-        for title in ["Title", "Summary", "Decisions", "Actions", "Open questions", "Highlights"] {
-            XCTAssertTrue(source.contains("noteBlock(\"\(title)\""))
+        for title in ["Summary", "Decisions", "Actions", "Open questions", "Highlights"] {
+            XCTAssertTrue(source.contains("block(\"\(title)\""), title)
         }
     }
 
@@ -950,7 +947,9 @@ final class LiveTranslateCoreTests: XCTestCase {
                 break
             }
         }
-        XCTAssertTrue(source.contains("ListenFeed.push"))
+        // Samples go from the tap to the speech worker queue; the main thread never decodes.
+        XCTAssertTrue(source.contains("worker.push(samples)"))
+        XCTAssertFalse(source.contains("decoder.decode("))
         XCTAssertFalse(source.contains("_ = buffer.samples"))
     }
 

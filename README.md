@@ -27,8 +27,30 @@ xcodebuild -project LiveTranslate.xcodeproj -scheme LiveTranslate -configuration
 open DerivedData/Build/Products/Debug/LiveTranslate.app
 ```
 
-The window shows the direction control and Listen. More holds Highlight, speakers, notes, Fast / Balanced / Accurate, Models, Type, Copy, and Save. Idle panels read "Listen to translate the room."
+The bar shows the direction, Listen / Stop (⌘↩), and Fast / Balanced / Accurate, then one-click icons for Highlight, speakers, notes, Models, type size, Copy, and Save. A status line under the bar names the speech and translation models and where each one runs (CPU, Neural Engine, or GPU). Idle panels read "Listen to translate the room."
 
-If the Mac pack is not installed, the panels name MacBook Pro M4 32GB, best, Listen stays disabled, and Models opens the pack list. Download that pack, press Listen, and allow the microphone. Speak. Committed words stay in the primary text and the live tail stays secondary. Direction stays fixed until Stop. Press Stop to end the session.
+If the Mac pack is not installed, the panels name MacBook Pro M4 32GB, best, Listen stays disabled, and Models opens the model screen. Press Listen and allow the microphone. Speak. Committed words stay in the primary text and the live tail stays secondary. Direction stays fixed until Stop. Press Stop to end the session.
+
+Every turn's text is selectable. Hover a turn for copy buttons, right-click for Copy detected text / Copy translation / Copy both, or use the copy icons in each panel header (⇧⌘C copies all detected text).
+
+### Models from Hugging Face
+
+Models has one tab per task: Thai streaming, English streaming, Translation, Notes, plus the packs. Each tab lists only Hugging Face repos that a runtime in this app can load:
+
+| Task | Runtime | What qualifies |
+| --- | --- | --- |
+| Thai / English streaming | sherpa-onnx, CPU | Streaming transducer with `encoder*/decoder*/joiner*.onnx` and `tokens.txt`, and sherpa metadata in the encoder (read with a ranged request before listing) |
+| English streaming | Core ML, Neural Engine | FluidAudio Nemotron streaming layout (`nemotron_coreml_1120ms/`) |
+| Translation, Notes | MLX, GPU | `config.json`, safetensors, tokenizer, an architecture the bundled mlx-lm has; ChindaMT / typhoon-translate for translation, Typhoon instruct for notes |
+
+Downloads resume, check the Hub's sha256, install atomically, and are opened once in a child process before they can be selected. Nothing downloads while Listen is on. For English, the Neural Engine build uses about 0.02 of a CPU core against 0.3 for the ONNX graph.
+
+Speech decoding runs on its own queue, never on the main thread. Both speech graphs stay loaded, the translator starts with the app, and notes passes run in the background.
+
+To stream a recording through the same path without the microphone:
+
+```
+DerivedData/Build/Products/Debug/LiveTranslate.app/Contents/MacOS/LiveTranslate --session --audio spikes/fixtures/en-room.wav --language en
+```
 
 The iPhone scheme is `LiveTranslateiOS`. Run it on an iPhone 17 Pro Max. The simulator can show the screen. Listen stays off there until the int8 speech pack and the 4-bit models are installed. On the phone, direction stays in the navigation bar, Listen is the bottom button with Highlight beside it, and Conversation / Notes switches the page. Build one scheme at a time.
