@@ -42,6 +42,7 @@ final class SystemAudioCapture: NSObject, AudioCapturing, SCStreamOutput, SCStre
                 try await stream.startCapture()
                 self.stream = stream
             } catch {
+                NSLog("system-audio start failed: %@", String(describing: error))
                 onError(error)
             }
         }
@@ -78,6 +79,7 @@ final class SystemAudioCapture: NSObject, AudioCapturing, SCStreamOutput, SCStre
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        NSLog("system-audio stopped with error: %@", String(describing: error))
         onError?(error)
     }
 }

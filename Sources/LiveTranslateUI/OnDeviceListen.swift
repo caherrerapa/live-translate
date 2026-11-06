@@ -286,6 +286,7 @@ final class ChindaTranslator {
         environment["TRANSFORMERS_OFFLINE"] = "1"
         environment["HF_HUB_DISABLE_TELEMETRY"] = "1"
         process.environment = environment
+        process.qualityOfService = .userInitiated
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()

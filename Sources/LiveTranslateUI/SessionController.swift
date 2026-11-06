@@ -16,7 +16,9 @@ enum EngineStatus: Equatable {
 
 @MainActor
 final class SessionController: ObservableObject {
-    @Published private(set) var engine: SessionEngine
+    /// Published by hand: `mutate` always notifies, while speech updates notify only when
+    /// something on screen changed, so unchanged hypotheses do not re-render the window.
+    private(set) var engine: SessionEngine
     @Published var showModels = false
     @Published var renaming = false
     @Published var renameText = ""
@@ -67,6 +69,7 @@ final class SessionController: ObservableObject {
     private var noteTranslationQueue: [String] = []
     /// Held while listening so App Nap cannot throttle the transcript when the window is in the background.
     private var listenActivity: NSObjectProtocol?
+    private var notesPrewarmed = false
     @Published private(set) var stopping = false
     private let worker = SpeechWorker()
     private let storage: URL
@@ -185,6 +188,11 @@ final class SessionController: ObservableObject {
         prepareSpeech()
         #if os(macOS)
         prepareTranslator()
+        if installed && !notesPrewarmed {
+            notesPrewarmed = true
+            let client = notesClient
+            notesQueue.async { client.prewarm() }
+        }
         #endif
     }
 
@@ -465,6 +473,8 @@ final class SessionController: ObservableObject {
             mutate { $0.setListening(false) }
             show("System audio needs Screen Recording access in System Settings.")
             #if os(macOS)
+            // Shows the system prompt the first time; after a refusal macOS only allows the Settings pane.
+            if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
                 NSWorkspace.shared.open(url)
             }
@@ -517,10 +527,10 @@ final class SessionController: ObservableObject {
     private func apply(_ update: SpeechWorker.Update) {
         guard engine.listening else { return }
         var request: TranslationRequest?
-        mutate { engine in
+        mutate({ engine in
             engine.pushHypothesis(update.step.text, speakerRaw: update.speakerRaw, at: Date(), endpoint: update.step.endpoint)
             request = engine.pendingTranslation
-        }
+        }, quietUnlessVisible: true)
         #if os(macOS)
         if let request, !translationRunning {
             translationRunning = true
@@ -1114,10 +1124,15 @@ final class SessionController: ObservableObject {
         mutate { $0.tick(now: Date()) }
     }
 
-    private func mutate(_ body: (inout SessionEngine) -> Void) {
+    private func mutate(_ body: (inout SessionEngine) -> Void, quietUnlessVisible: Bool = false) {
         var copy = engine
         body(&copy)
         let pass = copy.notes.takeRequestedPass()
+        let visible = !quietUnlessVisible
+            || copy.turns != engine.turns
+            || copy.notes.note != engine.notes.note
+            || copy.listening != engine.listening
+        if visible { objectWillChange.send() }
         engine = copy
         if let pass { runNotesPass(pass) }
     }

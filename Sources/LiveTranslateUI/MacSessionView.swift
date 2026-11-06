@@ -715,7 +715,8 @@ private struct LiveBadgeStyle: LabelStyle {
 
 struct BottomBar: View {
     @ObservedObject var controller: SessionController
-    @ObservedObject var levels: LevelMeter
+    /// Not observed here: only the waveform redraws when the level changes.
+    let levels: LevelMeter
 
     var body: some View {
         HStack(spacing: 14) {
@@ -782,7 +783,7 @@ struct BottomBar: View {
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
-                Waveform(levels: levels.levels)
+                Waveform(levels: levels)
                     .frame(width: 150, height: 26)
             }
         } else if controller.isPreparing {
@@ -836,18 +837,26 @@ private struct CaptionsButton: View {
     }
 }
 
+/// The input level as bars. It observes the meter itself and draws in one Canvas
+/// without animation, so 15 updates a second redraw only these pixels, not the bar
+/// around it or the transcript.
 private struct Waveform: View {
-    let levels: [Float]
+    @ObservedObject var levels: LevelMeter
 
     var body: some View {
-        HStack(alignment: .center, spacing: 2) {
-            ForEach(Array(levels.enumerated()), id: \.offset) { _, level in
-                Capsule()
-                    .fill(Theme.accent.opacity(0.3 + Double(level) * 0.7))
-                    .frame(width: 3, height: max(3, CGFloat(level) * 26))
+        Canvas { context, size in
+            let values = levels.levels
+            let step = size.width / CGFloat(max(values.count, 1))
+            let width = max(2, step - 2)
+            for (index, level) in values.enumerated() {
+                let height = max(3, CGFloat(level) * size.height)
+                let rect = CGRect(x: CGFloat(index) * step, y: (size.height - height) / 2, width: width, height: height)
+                context.fill(
+                    Path(roundedRect: rect, cornerRadius: width / 2),
+                    with: .color(Theme.accent.opacity(0.3 + Double(level) * 0.7))
+                )
             }
         }
-        .animation(.linear(duration: 0.06), value: levels)
     }
 }
 

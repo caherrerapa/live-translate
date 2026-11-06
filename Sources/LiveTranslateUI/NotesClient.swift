@@ -43,6 +43,14 @@ final class TyphoonNotesClient: @unchecked Sendable {
         return NotesProductionPass.draft(parsing: text, fallbackTurnID: noteInput.turns.last?.id ?? "")
     }
 
+    /// Loads the notes model before the first pass needs it, so a pass in the middle
+    /// of a session does not page gigabytes in. Call off the main thread.
+    func prewarm() {
+        lock.lock()
+        defer { lock.unlock() }
+        _ = startIfNeeded()
+    }
+
     func stop() {
         lock.lock()
         defer { lock.unlock() }
@@ -77,6 +85,8 @@ final class TyphoonNotesClient: @unchecked Sendable {
         environment["TRANSFORMERS_OFFLINE"] = "1"
         environment["HF_HUB_DISABLE_TELEMETRY"] = "1"
         process.environment = environment
+        // Notes may lag; speech, translation and the UI may not. Its CPU and disk I/O yield to them.
+        process.qualityOfService = .utility
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()

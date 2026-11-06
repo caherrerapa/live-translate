@@ -159,7 +159,7 @@ enum AutomationRunner {
         let english = root.appendingPathComponent("spikes/fixtures/en-room.wav")
         let thai = root.appendingPathComponent("spikes/fixtures/utt0072.wav")
         // Window managers place and resize a new window for a few seconds after launch.
-        await sleep(8)
+        await sleep(20)
         if ProcessInfo.processInfo.environment["LT_STORAGE"] != nil {
             // A previous run's delete-pack check leaves a tombstone in the throwaway storage.
             await controller.installer.allowAdopt(packID: controller.packID)
@@ -172,6 +172,18 @@ enum AutomationRunner {
 
         if ProcessInfo.processInfo.environment["LT_AUTOMATION_ONLY"] == "delete" {
             await deleteCheck(controller)
+            return
+        }
+        if let only = ProcessInfo.processInfo.environment["LT_AUTOMATION_ONLY"], only == "mic" || only == "system" {
+            await liveAudioCheck(controller, source: only == "mic" ? .microphone : .systemAudio, file: english)
+            check("Done", true, folder.path)
+            NSApp.terminate(nil)
+            return
+        }
+        if ProcessInfo.processInfo.environment["LT_AUTOMATION_ONLY"] == "thai" {
+            _ = await listen(controller, file: thai, direction: .thaiToEnglish, label: "thai-only")
+            check("Done", true, folder.path)
+            NSApp.terminate(nil)
             return
         }
 
@@ -230,6 +242,46 @@ enum AutomationRunner {
         await deleteCheck(controller)
         check("Done", true, folder.path)
         NSApp.terminate(nil)
+    }
+
+    /// Real capture, real sound: the Mac plays the recording aloud and the session hears it
+    /// through the microphone, or through ScreenCaptureKit for system audio.
+    private static func liveAudioCheck(_ controller: SessionController, source: AudioSourceKind, file: URL) async {
+        let label = source == .microphone ? "microphone" : "system audio"
+        controller.setDirection(.englishToThai)
+        controller.setAudioSource(source)
+        _ = await waitUntil(120) {
+            if case .ready(let name) = controller.speechStatus { return name.contains("EN") }
+            return false
+        }
+        controller.listenOrStop()
+        // A first run may show the permission prompt; give the person time to answer it.
+        let started = await waitUntil(90) { controller.engine.listening || controller.engine.microphoneDenied }
+        check("\(label): Listen starts with real capture", started && controller.engine.listening,
+              "listening \(controller.engine.listening), denied \(controller.engine.microphoneDenied), toast \(controller.toast ?? "")")
+        guard controller.engine.listening else { return }
+        await sleep(1.5)
+        let player = Process()
+        player.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
+        player.arguments = [file.path]
+        try? player.run()
+        var peak: Float = 0
+        while player.isRunning {
+            await sleep(0.1)
+            peak = max(peak, controller.levels.levels.max() ?? 0)
+        }
+        await sleep(2.5)
+        check("\(label): level meter hears the sound", peak > 0.05, String(format: "peak level %.2f", peak))
+        snapshot("\(label)-live")
+        controller.listenOrStop()
+        _ = await waitUntil(30) { !controller.engine.listening && !controller.stopping }
+        _ = await waitUntil(60) { controller.engine.pendingTranslation == nil && !controller.isTranslating }
+        let turns = controller.engine.turns.filter { !$0.sourceDisplay.isEmpty }
+        let source = turns.map(\.sourceDisplay).joined(separator: " ")
+        let translation = turns.map(\.translationCommitted).joined(separator: " ")
+        let heard = ["meeting", "notes", "translation", "ship"].filter { source.lowercased().contains($0) }
+        check("\(label): speech recognized from real sound", heard.count >= 2, source)
+        check("\(label): translated to Thai", translation.unicodeScalars.contains { (0x0E00...0x0E7F).contains($0.value) }, translation)
     }
 
     private static func deleteCheck(_ controller: SessionController) async {
