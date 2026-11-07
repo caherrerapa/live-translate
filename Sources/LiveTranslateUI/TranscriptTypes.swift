@@ -48,11 +48,14 @@ extension UTType {
     static let markdownText = UTType("net.daringfireball.markdown")
         ?? UTType(filenameExtension: "md", conformingTo: .plainText)
         ?? .plainText
+    /// Subtitle files, so exports get a real .srt / .vtt extension.
+    static let subRip = UTType(filenameExtension: "srt", conformingTo: .plainText) ?? .plainText
+    static let webVTT = UTType(filenameExtension: "vtt", conformingTo: .plainText) ?? .plainText
 }
 
 struct ExportFile: FileDocument {
     static var readableContentTypes: [UTType] { [.json, .plainText, .markdownText] }
-    static var writableContentTypes: [UTType] { [.markdownText, .plainText, .json] }
+    static var writableContentTypes: [UTType] { [.markdownText, .plainText, .json, .subRip, .webVTT] }
     var data: Data
 
     init(data: Data) { self.data = data }
@@ -99,6 +102,8 @@ enum Theme {
     static let border = Color(hex: 0xE5E5EA)
     static let chipBorder = Color(hex: 0xE0E0E6)
     static let rowHighlight = Color(hex: 0xF6F6F9)
+    /// Find matches in the transcript.
+    static let findMark = Color(hex: 0xFFE58A)
     static let pillFill = Color(hex: 0xF4F4F7)
     static let pauseFill = Color(hex: 0xF2F2F7)
     static let panel = Color(hex: 0xFAFAFC)
@@ -266,4 +271,61 @@ struct OutlinedControl: ViewModifier {
 
 extension View {
     func outlined() -> some View { modifier(OutlinedControl()) }
+}
+
+/// Talk time per speaker: name, a bar for the share, and minutes. Hidden with fewer than two voices.
+struct WhoSpoke: View {
+    let shares: [SpeakerShare]
+    var compact = false
+
+    var body: some View {
+        if shares.count > 1 {
+            VStack(alignment: .leading, spacing: compact ? 10 : 9) {
+                Text("WHO SPOKE")
+                    .font(.system(size: compact ? 13 : 11, weight: .semibold))
+                    .tracking((compact ? 13 : 11) * 0.04)
+                    .foregroundStyle(Color(hex: 0x636366))
+                ForEach(Array(shares.enumerated()), id: \.element.id) { index, share in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(verbatim: share.speaker).font(.system(size: compact ? 16 : 13, weight: .medium))
+                            Spacer()
+                            Text(verbatim: "\(SessionRecord.talkTime(share.seconds)) · \(Int((share.fraction * 100).rounded())) %")
+                                .font(.system(size: compact ? 14 : 12).monospacedDigit())
+                                .foregroundStyle(Color(hex: 0x636366))
+                        }
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(Color(hex: 0xEEEEF2))
+                                Capsule().fill(Theme.speakers[index % Theme.speakers.count])
+                                    .frame(width: max(4, geo.size.width * share.fraction))
+                            }
+                        }
+                        .frame(height: 5)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+            }
+        }
+    }
+}
+
+/// Find highlighting shared by the Mac transcript and the iPhone Transcript tab.
+enum FindMarking {
+    /// The text with every Find match on a yellow marker, ignoring case and accents.
+    static func marked(_ text: String, _ query: String) -> AttributedString {
+        var attributed = AttributedString(text)
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return attributed }
+        var searchStart = text.startIndex
+        while let range = text.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive], range: searchStart..<text.endIndex) {
+            if let lower = AttributedString.Index(range.lowerBound, within: attributed),
+               let upper = AttributedString.Index(range.upperBound, within: attributed) {
+                attributed[lower..<upper].backgroundColor = Theme.findMark
+            }
+            searchStart = range.upperBound
+        }
+        return attributed
+    }
+
 }

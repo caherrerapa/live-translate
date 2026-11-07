@@ -25,6 +25,31 @@ final class SessionController: ObservableObject {
     @Published var claudeSetupPresented = false
     /// The "Google Calendar" sheet.
     @Published var calendarSetupPresented = false
+    // MARK: Find in transcript
+
+    @Published var findVisible = false
+    @Published var findQuery = ""
+    /// Which match is current; wraps around as Find Next / Previous step through them.
+    @Published var findStep = 0
+
+    func showFind() { findVisible = true }
+    func findNext() { if !findVisible { findVisible = true } else { findStep += 1 } }
+    func findPrevious() { if !findVisible { findVisible = true } else { findStep -= 1 } }
+    func endFind() {
+        findVisible = false
+        findQuery = ""
+        findStep = 0
+    }
+
+    /// Ids of the turns whose original or translation contains the query, ignoring case and accents.
+    static func findMatches(_ query: String, in turns: [(id: String, texts: [String])]) -> [String] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return [] }
+        return turns.filter { turn in
+            turn.texts.contains { $0.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
+        }.map(\.id)
+    }
+
     /// The Mac side panel's segment: the summary, or Ask about this meeting.
     @Published var sidePanel: SidePanel = .summary
 
@@ -740,18 +765,22 @@ final class SessionController: ObservableObject {
         }
         store.save(record)
         lastAutosave = Date()
+        // Finished sessions (not mid-listening autosaves) also go to the chosen folder.
+        if listenStarted == nil { MarkdownFolder.save(kept) }
     }
 
     // MARK: Export
 
     enum ExportFormat: String, CaseIterable, Identifiable {
-        case markdown, text, json
+        case markdown, text, json, srt, vtt
         var id: String { rawValue }
         var title: String {
             switch self {
             case .markdown: return "Markdown"
             case .text: return "Plain text"
             case .json: return "JSON"
+            case .srt: return "Subtitles (SRT)"
+            case .vtt: return "Subtitles (WebVTT)"
             }
         }
         var contentType: UTType {
@@ -759,6 +788,8 @@ final class SessionController: ObservableObject {
             case .markdown: return .markdownText
             case .text: return .plainText
             case .json: return .json
+            case .srt: return .subRip
+            case .vtt: return .webVTT
             }
         }
 
@@ -767,6 +798,8 @@ final class SessionController: ObservableObject {
             case .markdown: return "md"
             case .text: return "txt"
             case .json: return "json"
+            case .srt: return "srt"
+            case .vtt: return "vtt"
             }
         }
     }
@@ -777,6 +810,30 @@ final class SessionController: ObservableObject {
         case .markdown: return Data(record.markdown().utf8)
         case .text: return Data(record.plainText().utf8)
         case .json: return (try? record.jsonData()) ?? Data()
+        // Subtitles carry the text chosen in Export → Subtitles text (translation by default).
+        case .srt: return Data(record.srt(subtitleText).utf8)
+        case .vtt: return Data(record.webVTT(subtitleText).utf8)
+        }
+    }
+
+    /// What subtitle exports show: the translation, the original, or both lines.
+    var subtitleText: SubtitleText {
+        get { SubtitleText(rawValue: UserDefaults.standard.string(forKey: "subtitleText") ?? "") ?? .translation }
+        set {
+            objectWillChange.send()
+            UserDefaults.standard.set(newValue.rawValue, forKey: "subtitleText")
+        }
+    }
+
+    /// A subtitle file in a temporary folder, for the iPhone share sheet.
+    func subtitleFile(_ format: ExportFormat) -> URL? {
+        let name = displayedRecord.displayTitle.replacingOccurrences(of: "/", with: "-")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).\(format.fileExtension)")
+        do {
+            try exportData(format).write(to: url, options: .atomic)
+            return url
+        } catch {
+            return nil
         }
     }
 

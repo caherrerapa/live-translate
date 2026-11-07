@@ -567,6 +567,7 @@ private struct TranscriptMain: View {
                         ScrollView {
                             let rows = turns
                             let viewingPast = controller.isViewingPast
+                            let currentMatch = currentMatchID(in: rows)
                             // Lazy: only the rows on screen are built, however long the meeting runs.
                             // Turns sit at the bottom, newest last, like the design (the frame below).
                             LazyVStack(spacing: 6) {
@@ -582,6 +583,8 @@ private struct TranscriptMain: View {
                                         layout: layout,
                                         focused: controller.engine.focusedTurnID == turn.id,
                                         viewingPast: viewingPast,
+                                        find: controller.findVisible ? controller.findQuery : "",
+                                        currentMatch: currentMatch == turn.id,
                                         controller: controller
                                     )
                                     .id(turn.id)
@@ -596,9 +599,21 @@ private struct TranscriptMain: View {
                             guard let id else { return }
                             withAnimation { proxy.scrollTo(id, anchor: .center) }
                         }
+                        .onChange(of: currentMatchID(in: turns)) { _, id in
+                            guard let id else { return }
+                            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .center) }
+                        }
                         .onChange(of: controller.engine.turns.count) { _, _ in
                             guard controller.engine.listening, let last = controller.engine.turns.last else { return }
                             proxy.scrollTo(last.id, anchor: .bottom)
+                        }
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        if controller.findVisible {
+                            FindBar(controller: controller, matches: findMatches(in: turns))
+                                .padding(.trailing, 24)
+                                .padding(.top, 4)
+                                .zIndex(1)
                         }
                     }
                     .overlay(alignment: .top) {
@@ -612,6 +627,18 @@ private struct TranscriptMain: View {
             ControlPill(controller: controller, levels: controller.levels)
                 .padding(.bottom, 24)
         }
+    }
+
+    private func findMatches(in rows: [DisplayTurn]) -> [String] {
+        guard controller.findVisible else { return [] }
+        return SessionController.findMatches(controller.findQuery, in: rows.map { ($0.id, [$0.source + $0.sourceTail, $0.translation]) })
+    }
+
+    private func currentMatchID(in rows: [DisplayTurn]) -> String? {
+        let matches = findMatches(in: rows)
+        guard !matches.isEmpty else { return nil }
+        let index = ((controller.findStep % matches.count) + matches.count) % matches.count
+        return matches[index]
     }
 
     private func columnLabel(_ text: String) -> some View {
@@ -679,6 +706,9 @@ struct TurnRow: View {
     let layout: TranscriptLayout
     let focused: Bool
     let viewingPast: Bool
+    /// Words to mark from Find, and whether this row is the current match.
+    var find = ""
+    var currentMatch = false
     /// For actions only. Not observed: a row redraws when its own turn changes, so a two-hour
     /// transcript does not re-render every row for each word of the live turn.
     let controller: SessionController
@@ -733,6 +763,7 @@ struct TurnRow: View {
         .padding(.vertical, 14)
         .padding(.horizontal, 16)
         .background(RoundedRectangle(cornerRadius: 12).fill(active ? Theme.rowHighlight : .clear))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(currentMatch ? Theme.accent.opacity(0.6) : .clear, lineWidth: 1.5))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .contextMenu {
@@ -777,7 +808,7 @@ struct TurnRow: View {
 
     private var sourceText: some View {
         let language = direction.source
-        return (Text(verbatim: turn.source)
+        return (Text(Self.marked(turn.source, find))
             + Text(verbatim: turn.sourceTail).foregroundColor(Theme.secondary)
             + (turn.live ? Text(Image(nsImage: Self.caret)).baselineOffset(-3) : Text("")))
             .font(Theme.body(language))
@@ -788,6 +819,10 @@ struct TurnRow: View {
             .padding(.top, Theme.leadingInset(language))
     }
 
+    static func marked(_ text: String, _ query: String) -> AttributedString {
+        FindMarking.marked(text, query)
+    }
+
     private var translationText: some View {
         let language = direction.target
         let pending = turn.live && !turn.translationText.isEmpty ? "…" : ""
@@ -796,7 +831,7 @@ struct TurnRow: View {
                 Text(turn.live ? "…" : "")
                     .foregroundStyle(Theme.secondary)
             } else {
-                (Text(verbatim: turn.translation)
+                (Text(Self.marked(turn.translation, find))
                     + Text(verbatim: turn.translationProvisional + pending).foregroundColor(Theme.secondary))
                     .foregroundStyle(Theme.text)
                     .textSelection(.enabled)
@@ -1036,6 +1071,7 @@ struct SummaryInspector: View {
                         summary
                         keyPoints
                         actions
+                        WhoSpoke(shares: record.speakerShares(), compact: false)
                     }
                     .padding(.top, 16)
                     .padding(.bottom, 22)
@@ -1282,6 +1318,54 @@ struct SessionSidebar: View {
         case .failed(let message): return message
         case .idle: return "\(direction.source.title) ⇄ \(direction.target.title) · no speech model yet"
         }
+    }
+}
+#endif
+
+#if os(macOS)
+/// ⌘F over the transcript: query, "2 of 7", previous / next, Done. Return steps forward, ⇧Return back.
+struct FindBar: View {
+    @ObservedObject var controller: SessionController
+    let matches: [String]
+    @FocusState private var focused: Bool
+
+    private var position: String {
+        let query = controller.findQuery.trimmingCharacters(in: .whitespaces)
+        if query.isEmpty { return "" }
+        if matches.isEmpty { return "No matches" }
+        let index = ((controller.findStep % matches.count) + matches.count) % matches.count
+        return "\(index + 1) of \(matches.count)"
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.secondary)
+            TextField("Find in transcript", text: $controller.findQuery)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .focused($focused)
+                .frame(width: 180)
+                .onSubmit { controller.findStep += NSEvent.modifierFlags.contains(.shift) ? -1 : 1 }
+                .onChange(of: controller.findQuery) { _, _ in controller.findStep = 0 }
+            Text(position)
+                .font(.system(size: 12).monospacedDigit())
+                .foregroundStyle(matches.isEmpty && !controller.findQuery.isEmpty ? Color(hex: 0xB4232A) : Theme.secondary)
+                .frame(minWidth: 64, alignment: .trailing)
+            Button { controller.findStep -= 1 } label: { Image(systemName: "chevron.up") }
+                .buttonStyle(.borderless).disabled(matches.isEmpty).help("Previous (⇧⌘G)")
+            Button { controller.findStep += 1 } label: { Image(systemName: "chevron.down") }
+                .buttonStyle(.borderless).disabled(matches.isEmpty).help("Next (⌘G)")
+            Button("Done") { controller.endFind() }
+                .buttonStyle(.borderless)
+                .keyboardShortcut(.cancelAction)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 36)
+        .background(.white, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.border))
+        .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+        .onAppear { focused = true }
+        .onChange(of: controller.findVisible) { _, visible in if visible { focused = true } }
     }
 }
 #endif

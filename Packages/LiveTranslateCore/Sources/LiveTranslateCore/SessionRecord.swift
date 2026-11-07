@@ -111,6 +111,12 @@ struct SessionRecord: Codable, Identifiable, Equatable {
             lines.append("")
         }
         lines.append(contentsOf: noteMarkdown())
+        let shares = speakerShares()
+        if shares.count > 1 {
+            lines += ["## Who spoke", ""]
+            lines += shares.map { "- \($0.speaker): \(Self.talkTime($0.seconds)) (\(Int(($0.fraction * 100).rounded())) %), \($0.turns) \($0.turns == 1 ? "turn" : "turns")" }
+            lines.append("")
+        }
         lines.append("## Transcript")
         lines.append("")
         for turn in turns {

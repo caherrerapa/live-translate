@@ -997,6 +997,47 @@ final class LiveTranslateCoreTests: XCTestCase {
         XCTAssertFalse(NotesProductionPass.prompt(for: NotesInput(note: .empty(), turns: [])).contains("Calendar event"))
     }
 
+    private func extrasRecord() -> SessionRecord {
+        var record = SessionRecord(started: Date(timeIntervalSince1970: 1_700_000_000), direction: .englishToThai)
+        record.turns = [
+            SavedTurn(id: "t1", source: "Thanks for joining.", translation: "ขอบคุณที่มาร่วม", speaker: "Sarah", start: 1.2, end: 4.0, direction: "en-th"),
+            SavedTurn(id: "t2", source: "Kiosks <arrive> Friday.", translation: "", speaker: "Niran", start: 3.5, end: 62.25, direction: "en-th"),
+            SavedTurn(id: "t3", source: "Ok", translation: "โอเค", speaker: "Sarah", start: 3700, end: 3700.2, direction: "en-th"),
+        ]
+        return record
+    }
+
+    func testSubtitlesUseTurnTimesWithoutOverlap() {
+        let record = extrasRecord()
+        let srt = record.srt(.translation)
+        XCTAssertTrue(srt.hasPrefix("1\n00:00:01,200 --> 00:00:03,500\nขอบคุณที่มาร่วม\n"), srt)
+        // No translation yet: the original stands in. The cue ends at its turn's end.
+        XCTAssertTrue(srt.contains("2\n00:00:03,500 --> 00:01:02,250\nKiosks <arrive> Friday.\n"), srt)
+        // A 0.2 s turn still shows for a second; hours roll over.
+        XCTAssertTrue(srt.contains("3\n01:01:40,000 --> 01:01:41,000\nโอเค"), srt)
+        let vtt = record.webVTT(.both)
+        XCTAssertTrue(vtt.hasPrefix("WEBVTT\n\n00:00:01.200 --> 00:00:03.500\n<v Sarah>Thanks for joining.\nขอบคุณที่มาร่วม"), vtt)
+        XCTAssertTrue(vtt.contains("<v Niran>Kiosks &lt;arrive> Friday."), vtt)
+        XCTAssertEqual(SessionRecord.stamp(0, comma: true), "00:00:00,000")
+    }
+
+    func testSpeakerSharesAndMarkdown() {
+        let record = extrasRecord()
+        let shares = record.speakerShares()
+        XCTAssertEqual(shares.map(\.speaker), ["Niran", "Sarah"])
+        XCTAssertEqual(shares[0].turns, 1)
+        XCTAssertEqual(shares[1].turns, 2)
+        XCTAssertEqual(shares.map(\.fraction).reduce(0, +), 1, accuracy: 0.0001)
+        XCTAssertEqual(SessionRecord.talkTime(58.75), "59 s")
+        XCTAssertEqual(SessionRecord.talkTime(125), "2 min 5 s")
+        let markdown = record.markdown()
+        XCTAssertTrue(markdown.contains("## Who spoke"))
+        XCTAssertTrue(markdown.contains("- Niran: 59 s (95 %), 1 turn"), markdown)
+        // A turn committed in one step (no span) is measured by its text instead of counting as 0 s.
+        let instant = SavedTurn(id: "t9", source: String(repeating: "word ", count: 28), translation: "", speaker: "A", start: 5, end: 5, direction: "en-th")
+        XCTAssertEqual(SessionRecord.spokenSeconds(instant), 10, accuracy: 0.01)
+    }
+
     private func sourceSlice(_ source: String, from startMark: String, to endMark: String) throws -> String {
         guard let start = source.range(of: startMark),
               let end = source.range(of: endMark, range: start.upperBound..<source.endIndex) else {

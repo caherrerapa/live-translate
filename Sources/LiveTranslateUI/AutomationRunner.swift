@@ -221,6 +221,12 @@ enum AutomationRunner {
             NSApp.terminate(nil)
             return
         }
+        if ProcessInfo.processInfo.environment["LT_AUTOMATION_ONLY"] == "features" {
+            await featuresCheck(controller)
+            check("Done", true, folder.path)
+            NSApp.terminate(nil)
+            return
+        }
         if ProcessInfo.processInfo.environment["LT_AUTOMATION_ONLY"] == "ask" {
             await askCheck(controller)
             check("Done", true, folder.path)
@@ -457,6 +463,80 @@ enum AutomationRunner {
               String(format: "worst input delay %.0f ms over %d events; main-queue stalls %@", inputWorst * 1000, input.count,
                      watchdog.stalls.map { String(format: "%.0f", $0.1 * 1000) }.joined(separator: ",")))
         check("Long meeting: main thread never stalls over 150 ms", worst < 0.15, String(format: "worst %.0f ms", worst * 1000))
+    }
+
+    /// The five added features: subtitles, who spoke, find, the Markdown folder, the menu bar.
+    private static func featuresCheck(_ controller: SessionController) async {
+        controller.loadDemo()
+        await sleep(1)
+        // 1. Subtitles
+        let srt = String(decoding: controller.exportData(.srt), as: UTF8.self)
+        let vtt = String(decoding: controller.exportData(.vtt), as: UTF8.self)
+        check("Subtitles: SRT cues with times and the translation",
+              srt.hasPrefix("1\n00:") && srt.contains(" --> ") && srt.unicodeScalars.contains { (0x0E00...0x0E7F).contains($0.value) },
+              String(srt.prefix(90)).replacingOccurrences(of: "\n", with: " / "))
+        check("Subtitles: WebVTT with speakers, real .srt/.vtt files",
+              vtt.hasPrefix("WEBVTT") && vtt.contains("<v Sarah>")
+              && SessionController.ExportFormat.srt.contentType.preferredFilenameExtension == "srt"
+              && SessionController.ExportFormat.vtt.contentType.preferredFilenameExtension == "vtt",
+              String(vtt.prefix(80)).replacingOccurrences(of: "\n", with: " / "))
+        // 2. Who spoke
+        let shares = controller.displayedRecord.speakerShares()
+        check("Who spoke: talk time per speaker, in the Markdown too",
+              shares.count == 2 && controller.displayedRecord.markdown().contains("## Who spoke"),
+              shares.map { "\($0.speaker) \(SessionRecord.talkTime($0.seconds)) \(Int($0.fraction * 100))%" }.joined(separator: ", "))
+        // 3. Find, through the real ⌘F menu item
+        func press(_ key: String, _ flags: NSEvent.ModifierFlags) -> Bool {
+            guard let event = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: NSApp.mainWindow?.windowNumber ?? 0, context: nil,
+                characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: 0
+            ) else { return false }
+            return NSApp.mainMenu?.performKeyEquivalent(with: event) ?? false
+        }
+        let opened = press("f", .command)
+        await sleep(0.5)
+        controller.findQuery = "permit"
+        await sleep(0.5)
+        let turns = controller.engine.turns.map { ($0.id, [$0.sourceDisplay, $0.translationCommitted]) }
+        let matches = SessionController.findMatches("PERMIT", in: turns)
+        _ = press("g", .command)
+        await sleep(0.3)
+        snapshot("find")
+        check("Find: ⌘F opens the bar; matches ignore case; ⌘G steps", opened && controller.findVisible && matches.count == 2 && controller.findStep == 1,
+              "\(matches.count) turns mention “permit”, step \(controller.findStep)")
+        controller.endFind()
+        // 4. Markdown folder (LT_MARKDOWN_FOLDER for checks)
+        if let markdownFolder = MarkdownFolder.folder {
+            try? FileManager.default.removeItem(at: markdownFolder)
+            controller.listenOrStop()
+            _ = await waitUntil(30) { !controller.engine.listening && !controller.stopping }
+            MarkdownFolder.flush()
+            let first = (try? FileManager.default.contentsOfDirectory(atPath: markdownFolder.path)) ?? []
+            controller.renameDisplayed("Store rollout sync")
+            await sleep(0.5)
+            MarkdownFolder.flush()
+            let second = (try? FileManager.default.contentsOfDirectory(atPath: markdownFolder.path)) ?? []
+            let content = second.first.flatMap { try? String(contentsOf: markdownFolder.appendingPathComponent($0), encoding: .utf8) } ?? ""
+            check("Markdown folder: the finished session is saved as .md",
+                  first.count == 1 && first[0].hasSuffix(".md") && first[0].contains("Supplier call"), first.joined(separator: ", "))
+            check("Markdown folder: a renamed session replaces its file",
+                  second.count == 1 && second[0].contains("Store rollout sync") && content.hasPrefix("# Store rollout sync"), second.joined(separator: ", "))
+        } else {
+            check("Markdown folder: LT_MARKDOWN_FOLDER set for the check", false, "")
+        }
+        // 5. Menu bar and the global shortcut
+        let statusItem = NSApp.windows.contains { String(describing: type(of: $0)).contains("NSStatusBarWindow") }
+        let hotKey = GlobalHotKey { }
+        let saved = UserDefaults.standard.object(forKey: GlobalHotKey.enabledKey)
+        UserDefaults.standard.set(true, forKey: GlobalHotKey.enabledKey)
+        hotKey.update()
+        let registered = hotKey.isRegistered
+        UserDefaults.standard.set(false, forKey: GlobalHotKey.enabledKey)
+        hotKey.update()
+        UserDefaults.standard.set(saved, forKey: GlobalHotKey.enabledKey)
+        check("Menu bar: the status item is there; ⌃⌥Space registers and releases", statusItem && registered && !hotKey.isRegistered,
+              "status item \(statusItem), registered \(registered)")
     }
 
     /// Ask: replies become text, citation chips and action cards; a real on-device answer arrives.

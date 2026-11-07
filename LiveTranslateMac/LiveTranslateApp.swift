@@ -21,6 +21,20 @@ struct LiveTranslateApp: App {
             }
         }
 
+        // Listen, Stop and the latest line from the menu bar, during a call in another app.
+        MenuBarExtra {
+            if let controller = model.controller {
+                MenuBarPanel(controller: controller)
+            }
+        } label: {
+            if let controller = model.controller {
+                MenuBarLabel(controller: controller)
+            } else {
+                Image(systemName: "waveform.circle")
+            }
+        }
+        .menuBarExtraStyle(.window)
+
         // Always-on-top captions for following a call or a talk while using other apps.
         Window("Live Captions", id: CaptionsWindow.id) {
             if let controller = model.controller {
@@ -54,12 +68,26 @@ struct SessionCommands: Commands {
                 ForEach(SessionController.ExportFormat.allCases) { format in
                     Button("\(format.title)…") { controller.exportRequest = format }
                 }
+                Divider()
+                Picker("Subtitles Show", selection: Binding(get: { controller.subtitleText }, set: { controller.subtitleText = $0 })) {
+                    Text("Translation").tag(SubtitleText.translation)
+                    Text("Original").tag(SubtitleText.original)
+                    Text("Both").tag(SubtitleText.both)
+                }
             }
             Button("Copy as Markdown") { controller.copyMarkdown() }
                 .keyboardShortcut("c", modifiers: [.command, .option, .shift])
             Divider()
             Button("Connect to Claude…") { controller.claudeSetupPresented = true }
             Button("Connect Google Calendar…") { controller.calendarSetupPresented = true }
+        }
+        CommandGroup(replacing: .textEditing) {
+            Button("Find in Transcript…") { controller.showFind() }
+                .keyboardShortcut("f", modifiers: .command)
+            Button("Find Next") { controller.findNext() }
+                .keyboardShortcut("g", modifiers: .command)
+            Button("Find Previous") { controller.findPrevious() }
+                .keyboardShortcut("g", modifiers: [.command, .shift])
         }
         CommandGroup(after: .pasteboard) {
             Divider()
@@ -118,6 +146,8 @@ struct SessionCommands: Commands {
 @MainActor
 final class AppModel: ObservableObject {
     let controller: SessionController?
+    /// ⌃⌥Space: Listen / Stop from any app.
+    private(set) var hotKey: GlobalHotKey?
 
     init() {
         if let catalog = try? ModelCatalog.loadFromBundle() {
@@ -129,6 +159,15 @@ final class AppModel: ObservableObject {
             )
         } else {
             controller = nil
+        }
+        // Not for automated check instances, which must not take the shortcut from the real app.
+        if let controller, ProcessInfo.processInfo.environment["LT_AUTOMATION"] == nil {
+            let hotKey = GlobalHotKey { controller.listenOrStop() }
+            hotKey.update()
+            self.hotKey = hotKey
+            NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak hotKey] _ in
+                MainActor.assumeIsolated { hotKey?.update() }
+            }
         }
     }
 }

@@ -399,6 +399,7 @@ private struct PhoneSessionDetail: View {
     @State private var copying = false
 
     @State private var settings = false
+    @State private var query = ""
 
     enum Tab { case summary, transcript, ask }
 
@@ -469,7 +470,17 @@ private struct PhoneSessionDetail: View {
                         .background(Theme.accent, in: RoundedRectangle(cornerRadius: 14))
                 }
                 .buttonStyle(.plain)
-                ShareLink(item: record.markdown(), subject: Text(verbatim: record.displayTitle)) {
+                Menu {
+                    ShareLink(item: record.markdown(), subject: Text(verbatim: record.displayTitle)) {
+                        Label("Share as Markdown", systemImage: "doc.richtext")
+                    }
+                    if let srt = controller.subtitleFile(.srt) {
+                        ShareLink(item: srt) { Label("Share Subtitles (SRT)", systemImage: "captions.bubble") }
+                    }
+                    if let vtt = controller.subtitleFile(.vtt) {
+                        ShareLink(item: vtt) { Label("Share Subtitles (WebVTT)", systemImage: "captions.bubble") }
+                    }
+                } label: {
                     Image(systemName: "square.and.arrow.up")
                         .font(.system(size: 18, weight: .medium))
                         .foregroundStyle(Theme.accent)
@@ -606,27 +617,49 @@ private struct PhoneSessionDetail: View {
                     }
                 }
             }
+            WhoSpoke(shares: record.speakerShares(), compact: true)
         }
     }
 
     @ViewBuilder
     private func transcript(_ record: SessionRecord) -> some View {
+        let ids = Set(SessionController.findMatches(query, in: record.turns.map { ($0.id, [$0.source, $0.translation]) }))
+        let shown = query.trimmingCharacters(in: .whitespaces).isEmpty ? record.turns : record.turns.filter { ids.contains($0.id) }
         LazyVStack(alignment: .leading, spacing: 22) {
+            if !record.turns.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(Phone.secondary)
+                    TextField("Search the transcript", text: $query)
+                        .font(.system(size: 17))
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    if !query.isEmpty {
+                        Text("\(shown.count)").font(.system(size: 15).monospacedDigit()).foregroundStyle(Phone.secondary)
+                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Color(hex: 0xC7C7CC)) }
+                            .accessibilityLabel("Clear search")
+                    }
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 40)
+                .background(Phone.segmentFill, in: RoundedRectangle(cornerRadius: 10))
+            }
             if record.turns.isEmpty {
                 Text("Nothing was said.").font(.system(size: 17)).foregroundStyle(Phone.secondary)
+            } else if shown.isEmpty {
+                Text("No turn mentions “\(query)”.").font(.system(size: 17)).foregroundStyle(Phone.secondary)
             }
-            ForEach(record.turns, id: \.id) { turn in
+            ForEach(shown, id: \.id) { turn in
                 VStack(alignment: .leading, spacing: 4) {
                     if !turn.speaker.isEmpty {
                         Text(verbatim: turn.speaker)
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(Phone.secondary)
                     }
-                    Text(verbatim: turn.source)
+                    Text(FindMarking.marked(turn.source, query))
                         .font(Theme.body(record.direction.source, size: 15))
                         .foregroundStyle(Phone.secondary)
                     if !turn.translation.isEmpty {
-                        Text(verbatim: turn.translation)
+                        Text(FindMarking.marked(turn.translation, query))
                             .font(Theme.body(record.direction.target, size: 19, weight: .medium))
                     }
                 }

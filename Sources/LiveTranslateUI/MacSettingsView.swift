@@ -33,6 +33,21 @@ private struct MacGeneralSettings: View {
     @ObservedObject var calendar = GoogleCalendar.shared
     @State private var showCalendar = false
     @State private var showClaude = false
+    @State private var folder = MarkdownFolder.folder
+    @AppStorage(GlobalHotKey.enabledKey) private var hotKeyOn = true
+
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Save Here"
+        panel.message = "Live Translate saves each finished session here as a Markdown file."
+        if panel.runModal() == .OK, let url = panel.url {
+            MarkdownFolder.folder = url
+            folder = url
+        }
+    }
 
     var body: some View {
         Form {
@@ -51,6 +66,30 @@ private struct MacGeneralSettings: View {
                     Button("Set Up…") { showClaude = true }
                 }
                 Text("Claude, signed in with your account, can list, read and search your sessions through Live Translate's MCP server.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Shortcut") {
+                Toggle("⌃⌥Space starts and stops listening from any app", isOn: $hotKeyOn)
+                Text("Live Translate also sits in the menu bar, with Listen, Stop and the latest translated line.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Save sessions") {
+                Toggle("Save each session as Markdown to a folder", isOn: Binding(
+                    get: { folder != nil },
+                    set: { on in
+                        if on { chooseFolder() } else { MarkdownFolder.folder = nil; folder = nil }
+                    }
+                ))
+                if let folder {
+                    LabeledContent("Folder") {
+                        HStack {
+                            Text(folder.path(percentEncoded: false)).lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
+                            Button("Change…") { chooseFolder() }
+                            Button("Show") { NSWorkspace.shared.activateFileViewerSelecting([folder]) }
+                        }
+                    }
+                }
+                Text("When a session ends, it is written there with its summary, who spoke, and the transcript, and updated when the summary finishes. Works well with an Obsidian vault or an iCloud Drive folder.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Copy") {
