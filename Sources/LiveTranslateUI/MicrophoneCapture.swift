@@ -43,12 +43,24 @@ final class MicrophoneCapture: AudioCapturing {
     private var onSamples: (([Float]) -> Void)?
     private var onError: ((Error) -> Void)?
     private var configurationObserver: NSObjectProtocol?
+    private var interruptionObserver: NSObjectProtocol?
 
     func start(onSamples: @escaping ([Float]) -> Void, onError: @escaping (Error) -> Void) throws {
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker])
         try session.setActive(true)
+        // A call or Siri stops the engine; without a restart the session goes silent once it ends.
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: session,
+            queue: .main
+        ) { [weak self] note in
+            guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
+            try? AVAudioSession.sharedInstance().setActive(true)
+            self?.restartAfterConfigurationChange()
+        }
         #endif
         self.onSamples = onSamples
         self.onError = onError
@@ -71,6 +83,10 @@ final class MicrophoneCapture: AudioCapturing {
             NotificationCenter.default.removeObserver(configurationObserver)
         }
         configurationObserver = nil
+        if let interruptionObserver {
+            NotificationCenter.default.removeObserver(interruptionObserver)
+        }
+        interruptionObserver = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         started = false

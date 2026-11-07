@@ -9,8 +9,26 @@ struct CalendarSettingsView: View {
     @State private var meetingNow: String?
 
     var body: some View {
+        #if os(iOS)
+        // The iPhone's sheets share a navigation bar with an indigo Done.
+        NavigationStack {
+            ScrollView { form }
+                .navigationTitle("Google Calendar")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { SheetDoneItem { dismiss() } }
+        }
+        .tint(Theme.accent)
+        .presentationDragIndicator(.visible)
+        #else
+        form
+        #endif
+    }
+
+    private var form: some View {
         VStack(alignment: .leading, spacing: 16) {
+            #if os(macOS)
             Text("Google Calendar").font(.title2.weight(.semibold))
+            #endif
             Text("When you start a session, Live Translate looks up the meeting happening now. Its title names the session, and its attendees and agenda help the summary. Read-only; nothing is written to your calendar.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -43,10 +61,18 @@ struct CalendarSettingsView: View {
                         #if os(iOS)
                         .textInputAutocapitalization(.never)
                         #endif
-                    Text("In Google Cloud Console: create a project, enable the Google Calendar API, set up the OAuth consent screen, then create an OAuth client ID of type iOS with bundle ID com.caherrerapa.LiveTranslateiOS (the same client ID works on the Mac). Paste its client ID here.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    // The steps are for whoever sets up the Google project; most people only paste the ID.
+                    DisclosureGroup("How to get a client ID") {
+                        Text("In Google Cloud Console: create a project, enable the Google Calendar API, set up the OAuth consent screen, then create an OAuth client ID of type iOS with bundle ID \(Bundle.main.bundleIdentifier ?? ""). The same client ID works on iPhone and Mac.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 4)
+                    }
+                    .font(.callout)
+                    // Label and chevron in one color; the steps keep their own secondary style.
+                    .foregroundStyle(Theme.accent)
                 }
                 Button {
                     Task {
@@ -65,14 +91,44 @@ struct CalendarSettingsView: View {
             if let message {
                 Text(message).font(.callout).foregroundStyle(.red)
             }
+            #if os(macOS)
             HStack {
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
             }
+            #endif
         }
         .padding(22)
         #if os(macOS)
         .frame(width: 520)
         #endif
+    }
+}
+
+/// Done for a sheet's navigation bar. On the iPhone it matches the app's own sheets
+/// (Settings, Copy, languages): plain indigo semibold text, without the toolbar's glass capsule.
+struct SheetDoneItem: ToolbarContent {
+    let action: () -> Void
+
+    var body: some ToolbarContent {
+        #if os(iOS)
+        if #available(iOS 26.0, *) {
+            item.sharedBackgroundVisibility(.hidden)
+        } else {
+            item
+        }
+        #else
+        item
+        #endif
+    }
+
+    private var item: some ToolbarContent {
+        ToolbarItem(placement: .confirmationAction) {
+            Button("Done", action: action)
+                #if os(iOS)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Theme.accent)
+                #endif
+        }
     }
 }

@@ -120,7 +120,12 @@ struct SessionScreen: View {
                 .padding(.vertical, 8)
                 .background(.regularMaterial, in: Capsule())
                 .shadow(radius: 4, y: 2)
+                #if os(iOS)
+                // Above the phone's 52 pt Copy and Share bar, not on top of it.
+                .padding(.bottom, 84)
+                #else
                 .padding(.bottom, 20)
+                #endif
                 .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
@@ -710,6 +715,13 @@ struct ModelScreen: View {
     @State private var page: Page = .speech
     @State private var speechLanguage: SpeechLanguage = .thai
 
+    /// The iPhone opens this from Settings › Languages & Models, so the sheet uses the same name.
+    #if os(iOS)
+    static let title = "Languages & Models"
+    #else
+    static let title = "Models"
+    #endif
+
     enum Page: Hashable {
         case speech
         case translation
@@ -736,16 +748,16 @@ struct ModelScreen: View {
             } else {
                 NavigationStack {
                     content
-                        .navigationTitle("Models")
-                        .toolbar {
-                            ToolbarItem(placement: .confirmationAction) {
-                                Button("Done") { dismiss() }
-                            }
-                        }
+                        .navigationTitle(Self.title)
+                        .toolbar { SheetDoneItem { dismiss() } }
                 }
             }
         }
+        #if os(macOS)
+        // A floor for the Mac window; on iPhone the sheet takes the screen's width.
         .frame(minWidth: 720, minHeight: 560)
+        #endif
+        .tint(Theme.accent)
         .onAppear {
             speechLanguage = controller.engine.direction.source
         }
@@ -757,7 +769,10 @@ struct ModelScreen: View {
                     Label("Speech", systemImage: "waveform").tag(Page.speech)
                     Label("Translation", systemImage: "character.bubble").tag(Page.translation)
                     Label("Notes", systemImage: "list.bullet.rectangle").tag(Page.notes)
+                    #if os(macOS)
+                    // The iPhone runs Apple's on-device engines and has no packs to manage.
                     Label("Packs", systemImage: "shippingbox").tag(Page.packs)
+                    #endif
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
@@ -765,7 +780,8 @@ struct ModelScreen: View {
                 if page == .speech {
                     // Only streaming models for the chosen language are listed.
                     Picker("Language", selection: $speechLanguage) {
-                        ForEach(SpeechLanguage.allCases) { language in
+                        // Alphabetical, the same order as the language picker.
+                        ForEach(SpeechLanguage.allCases.sorted { $0.title < $1.title }) { language in
                             Text(language.title).tag(language)
                         }
                     }
@@ -849,17 +865,49 @@ struct TaskModelList: View {
     @ObservedObject var library: ModelLibrary
 
     private var installedHere: [HubCandidate] {
-        library.installed.filter { $0.task == task }
+        library.installed.filter { $0.task == task && Self.runsHere($0) }
     }
 
     private var available: [HubCandidate] {
-        (library.results[task] ?? []).filter { candidate in !installedHere.contains { $0.repo == candidate.repo } }
+        (library.results[task] ?? []).filter { candidate in
+            Self.runsHere(candidate) && !installedHere.contains { $0.repo == candidate.repo }
+        }
+    }
+
+    /// The iPhone opens Core ML speech models only; ONNX speech and MLX translation and notes
+    /// models need the Mac's runtimes, so listing them there would offer models that never load.
+    static func runsHere(_ candidate: HubCandidate) -> Bool {
+        #if os(iOS)
+        return candidate.runtime == .coreMLNemotron
+        #else
+        return true
+        #endif
+    }
+
+    /// What the task does. The shared subtitle names the Mac's translation models.
+    private var taskSummary: String {
+        #if os(iOS)
+        if task == .translation { return "Text translation for every language pair." }
+        #endif
+        return task.subtitle
+    }
+
+    /// Whether the Hub can offer anything for this task on this device.
+    private var hubApplies: Bool {
+        #if os(iOS)
+        if case .speech = task { return true }
+        return false
+        #else
+        return true
+        #endif
     }
 
     var body: some View {
         List {
             Section {
-                Text(task.subtitle + " Only Hugging Face models that this app can run for this task are listed. Files download to this device and are checked against the Hub's sha256.")
+                Text(taskSummary + (hubApplies
+                    ? " Only Hugging Face models that this app can run for this task are listed. Files download to this device and are checked against the Hub's sha256."
+                    : " On iPhone this runs on Apple's on-device model, which the system downloads and updates."))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -869,6 +917,7 @@ struct TaskModelList: View {
                     candidateRow(candidate)
                 }
             }
+            if hubApplies {
             Section {
                 if library.searching.contains(task) && available.isEmpty {
                     HStack {
@@ -896,9 +945,10 @@ struct TaskModelList: View {
                     .disabled(library.searching.contains(task))
                 }
             }
+            }
         }
         .task {
-            if library.results[task] == nil { await library.search(task) }
+            if hubApplies, library.results[task] == nil { await library.search(task) }
         }
     }
 
@@ -920,6 +970,14 @@ struct TaskModelList: View {
         .equatable()
     }
 
+    private var appleTitle: String {
+        switch task {
+        case .speech(let language): return "Apple Speech \(language.title)"
+        case .translation: return "Apple Translation"
+        case .notes: return "Apple Intelligence"
+        }
+    }
+
     private var builtInTitle: String {
         guard let pack = controller.catalog.pack(id: controller.engine.packID) else { return "Pack model" }
         let id: String?
@@ -939,10 +997,18 @@ struct TaskModelList: View {
             Image(systemName: selected ? "largecircle.fill.circle" : "circle")
                 .foregroundStyle(selected ? Color.accentColor : .secondary)
             VStack(alignment: .leading, spacing: 2) {
+                #if os(iOS)
+                // What the iPhone actually runs: Apple's engines, not the Mac's pack models.
+                Text(verbatim: appleTitle)
+                Text("Built into iOS · on device")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                #else
                 Text(verbatim: builtInTitle)
                 Text("From the \(controller.packName) pack · \(task == .translation || task == .notes ? ModelRuntime.mlx.accelerator : ModelRuntime.sherpaStreaming.accelerator)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                #endif
             }
             Spacer()
             if !selected {
@@ -984,6 +1050,18 @@ struct CandidateRow: View, Equatable {
                     .foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 4) {
+                #if os(iOS)
+                // A phone row is too narrow for the name and the badge side by side.
+                if let url = URL(string: "https://huggingface.co/\(candidate.repo)") {
+                    Link(destination: url) {
+                        Text(verbatim: candidate.repo)
+                            .fontWeight(.medium)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                    }
+                }
+                badge(candidate.runtime.accelerator, tint: candidate.runtime == .coreMLNemotron ? .green : .blue)
+                #else
                 HStack(spacing: 6) {
                     if let url = URL(string: "https://huggingface.co/\(candidate.repo)") {
                         Link(destination: url) {
@@ -996,6 +1074,14 @@ struct CandidateRow: View, Equatable {
                     }
                     badge(candidate.runtime.accelerator, tint: candidate.runtime == .coreMLNemotron ? .green : .blue)
                 }
+                #endif
+                #if os(iOS)
+                // One line that wraps as text; separate columns crushed to a letter each on a phone.
+                Text(verbatim: metadata.joined(separator: " · "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                #else
                 HStack(spacing: 10) {
                     if candidate.totalBytes > 0 {
                         Text(ByteCountFormatter.string(fromByteCount: candidate.totalBytes, countStyle: .file))
@@ -1013,12 +1099,26 @@ struct CandidateRow: View, Equatable {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                #endif
                 statusLine(status)
             }
             Spacer()
             actions(status, inUse: inUse)
         }
         .padding(.vertical, 4)
+    }
+
+    private var metadata: [String] {
+        var parts: [String] = []
+        if candidate.totalBytes > 0 {
+            parts.append(ByteCountFormatter.string(fromByteCount: candidate.totalBytes, countStyle: .file))
+        }
+        parts.append("\(candidate.downloads.formatted()) downloads")
+        if let license = candidate.license { parts.append(license) }
+        if candidate.task == .translation {
+            parts.append(candidate.multilingual == true ? "Many languages" : "Thai ⇄ English")
+        }
+        return parts
     }
 
     @ViewBuilder

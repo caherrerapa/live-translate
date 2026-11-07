@@ -30,6 +30,10 @@ rsync -a --exclude '__pycache__' --exclude 'test/' --exclude 'idlelib/' --exclud
 rsync -a --exclude '__pycache__' "$VENV/lib/$PYVER/site-packages/" "$RUNTIME/lib/$PYVER/site-packages/"
 "$RUNTIME/bin/python3" -I -c "import mlx_lm, mlx.core; print('mlx', mlx.core.__version__)"
 
+# The menu bar, About and Quit use CFBundleName, which Xcode sets to the product name
+# "LiveTranslate". People see "Live Translate"; the executable keeps its name for `--mcp`.
+plutil -replace CFBundleName -string "Live Translate" "$APP/Contents/Info.plist"
+
 # Gatekeeper accepts a downloaded app only when it is signed with a Developer ID
 # Application certificate and notarized. Without one, the DMG is ad-hoc signed and
 # macOS warns that it may be dangerous.
@@ -72,7 +76,8 @@ fi
 echo "==> DMG"
 mkdir -p "$OUT"
 STAGE=$(mktemp -d)
-cp -R "$APP" "$STAGE/"
+# Installed as "Live Translate.app", the name people see in Finder and Applications.
+cp -R "$APP" "$STAGE/Live Translate.app"
 ln -s /Applications "$STAGE/Applications"
 DMG="$OUT/LiveTranslate-$VERSION.dmg"
 rm -f "$DMG"

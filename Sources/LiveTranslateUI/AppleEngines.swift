@@ -51,6 +51,8 @@ extension AppleEngines {
         for language in SpeechLanguage.allCases {
             let match = await SpeechTranscriber.supportedLocale(equivalentTo: locale(language))
             lines.append("speech \(language.code): \(match?.identifier(.bcp47) ?? "none")")
+            let dictation = await DictationTranscriber.supportedLocale(equivalentTo: locale(language))
+            lines.append("dictation \(language.code): \(dictation?.identifier(.bcp47) ?? "none")")
         }
         for language in SpeechLanguage.allCases where language != .english {
             let status = await AppleTranslator.status(TranslationDirection(source: .english, target: language))
@@ -65,10 +67,11 @@ extension AppleEngines {
 /// Apple's SpeechTranscriber as a pull-style decoder for the speech worker. Audio goes in
 /// as it arrives; results come back on their own task and are read at the next push.
 /// A finalized result ends the turn, the same way an endpoint does for the Mac models.
+/// Apple only finalizes on its own at long pauses, so a silence gate asks it to finalize.
 @available(iOS 26.0, *)
 final class AppleSpeechDecoder: LiveSpeechDecoder {
-    let engineLabel = "Apple Speech · on device"
-    private let transcriber: SpeechTranscriber
+    let engineLabel: String
+    private let transcriber: any SpeechModule
     private let analyzer: SpeechAnalyzer
     private let input: AsyncStream<AnalyzerInput>.Continuation
     private let analyzerFormat: AVAudioFormat
@@ -79,16 +82,37 @@ final class AppleSpeechDecoder: LiveSpeechDecoder {
     private var forming = ""
     private var resultsTask: Task<Void, Never>?
 
+    /// RMS above this is speech, the same gate as the Core ML decoder. About -42 dBFS.
+    static let speechRMS: Float = CoreMLNemotronDecoder.speechRMS
+    /// Silence after speech that ends a turn, about 0.8 s.
+    static let endpointSamples = CoreMLNemotronDecoder.endpointSamples
+    /// Distant voices often sit under the RMS gate mid-sentence, so silence alone does not end
+    /// a turn: the words must also have stopped changing for 0.6 s.
+    static let pausedStableSamples = 9_600
+    /// Words unchanged for 1.2 s end a turn at any level, for noisy rooms and quiet talkers.
+    static let stableSamples = 19_200
+    // Touched only from the speech queue.
+    private var samplesSeen = 0
+    private var silentSamples = 0
+    private var heardSpeech = false
+    private var lastForming = ""
+    private var formingSince = 0
+    private var finalizing = false
+
     init?(language: SpeechLanguage) {
         let wanted = AppleEngines.locale(language)
-        // supportedLocale(equivalentTo:) can answer even where the transcriber has no languages
-        // (the Simulator), so the match must also be in the supported list.
-        guard let locale = AppleEngines.blocking(timeout: 10, fallback: nil, { () async -> Locale? in
-            guard let match = await SpeechTranscriber.supportedLocale(equivalentTo: wanted) else { return nil }
-            let supported = await SpeechTranscriber.supportedLocales
-            return supported.contains { $0.identifier(.bcp47) == match.identifier(.bcp47) } ? match : nil
-        }) else { return nil }
-        let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
+        // SpeechTranscriber covers fewer languages (no Thai); DictationTranscriber uses the
+        // on-device dictation models, which cover the rest.
+        let transcriber: any SpeechModule
+        if let locale = Self.supported(wanted, SpeechTranscriber.self) {
+            transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
+            engineLabel = "Apple Speech · on device"
+        } else if let locale = Self.supported(wanted, DictationTranscriber.self) {
+            transcriber = DictationTranscriber(locale: locale, preset: .progressiveLongDictation)
+            engineLabel = "Apple Dictation · on device"
+        } else {
+            return nil
+        }
         // The system downloads the language's model the first time; it is shared with other apps.
         let installed = AppleEngines.blocking(timeout: 600, fallback: false) {
             do {
@@ -125,20 +149,28 @@ final class AppleSpeechDecoder: LiveSpeechDecoder {
         listen()
     }
 
+    /// The module's locale for `wanted`. supportedLocale(equivalentTo:) can answer even where the
+    /// module has no languages (the Simulator), so the match must also be in the supported list.
+    private static func supported<Module: LocaleDependentSpeechModule>(_ wanted: Locale, _ module: Module.Type) -> Locale? {
+        AppleEngines.blocking(timeout: 10, fallback: nil) { () async -> Locale? in
+            guard let match = await Module.supportedLocale(equivalentTo: wanted) else { return nil }
+            let supported = await Module.supportedLocales
+            return supported.contains { $0.identifier(.bcp47) == match.identifier(.bcp47) } ? match : nil
+        }
+    }
+
     private func listen() {
-        resultsTask = Task.detached(priority: .userInitiated) { [weak self, transcriber] in
+        let transcriber = self.transcriber
+        resultsTask = Task.detached(priority: .userInitiated) { [weak self] in
             do {
-                for try await result in transcriber.results {
-                    guard let self else { return }
-                    let text = String(result.text.characters)
-                    self.lock.lock()
-                    if result.isFinal {
-                        self.finished += self.finished.isEmpty ? text : " " + text
-                        self.forming = ""
-                    } else {
-                        self.forming = text
+                if let speech = transcriber as? SpeechTranscriber {
+                    for try await result in speech.results {
+                        self?.receive(String(result.text.characters), isFinal: result.isFinal)
                     }
-                    self.lock.unlock()
+                } else if let dictation = transcriber as? DictationTranscriber {
+                    for try await result in dictation.results {
+                        self?.receive(String(result.text.characters), isFinal: result.isFinal)
+                    }
                 }
             } catch {
                 return
@@ -146,9 +178,30 @@ final class AppleSpeechDecoder: LiveSpeechDecoder {
         }
     }
 
+    private func receive(_ text: String, isFinal: Bool) {
+        lock.lock()
+        if isFinal {
+            finished += finished.isEmpty ? text : " " + text
+            forming = ""
+        } else {
+            forming = text
+        }
+        lock.unlock()
+    }
+
     func decode(_ samples: [Float]) -> StreamStep {
         if let buffer = buffer(samples) {
             input.yield(AnalyzerInput(buffer: buffer))
+        }
+        samplesSeen += samples.count
+        if !samples.isEmpty {
+            let rms = (samples.reduce(0) { $0 + $1 * $1 } / Float(samples.count)).squareRoot()
+            if rms > Self.speechRMS {
+                heardSpeech = true
+                silentSamples = 0
+            } else {
+                silentSamples += samples.count
+            }
         }
         lock.lock()
         defer { lock.unlock() }
@@ -156,9 +209,26 @@ final class AppleSpeechDecoder: LiveSpeechDecoder {
         if !finished.isEmpty {
             let text = finished.trimmingCharacters(in: .whitespacesAndNewlines)
             finished = ""
+            finalizing = false
+            heardSpeech = false
             return StreamStep(text: text, endpoint: true)
         }
-        return StreamStep(text: forming.trimmingCharacters(in: .whitespacesAndNewlines), endpoint: false)
+        let text = forming.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text != lastForming {
+            lastForming = text
+            formingSince = samplesSeen
+            finalizing = false
+        }
+        let unchanged = samplesSeen - formingSince
+        let paused = heardSpeech && silentSamples >= Self.endpointSamples && unchanged >= Self.pausedStableSamples
+        let settled = unchanged >= Self.stableSamples
+        if !text.isEmpty, !finalizing, paused || settled {
+            // The final result arrives on the results task and closes the turn at a later push.
+            finalizing = true
+            let analyzer = self.analyzer
+            Task.detached(priority: .userInitiated) { try? await analyzer.finalize(through: nil) }
+        }
+        return StreamStep(text: text, endpoint: false)
     }
 
     func reset() {
@@ -166,6 +236,11 @@ final class AppleSpeechDecoder: LiveSpeechDecoder {
         finished = ""
         forming = ""
         lock.unlock()
+        silentSamples = 0
+        heardSpeech = false
+        lastForming = ""
+        formingSince = samplesSeen
+        finalizing = false
     }
 
     func close() {

@@ -24,6 +24,7 @@ struct LiveTranslateiOSApp: App {
 
 struct PhoneRoot: View {
     @StateObject private var controller: SessionController
+    @Environment(\.scenePhase) private var scenePhase
 
     init(catalog: ModelCatalog) {
         _controller = StateObject(
@@ -41,6 +42,13 @@ struct PhoneRoot: View {
             controller: controller,
             shell: UIDevice.current.userInterfaceIdiom == .pad ? .pad : .phone
         )
+        // Auto-lock mid-meeting would background the app; keep the screen on while listening.
+        .onChange(of: controller.engine.listening) { _, listening in
+            UIApplication.shared.isIdleTimerDisabled = listening
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { controller.saveLiveSession() }
+        }
         .task {
             #if DEBUG
             if ProcessInfo.processInfo.environment["LT_IOS_PROBE"] != nil {

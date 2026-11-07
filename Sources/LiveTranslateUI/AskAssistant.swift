@@ -255,7 +255,8 @@ final class AIConnections: NSObject, ObservableObject {
                 if let url {
                     continuation.resume(returning: url)
                 } else if let error = error as? ASWebAuthenticationSessionError, error.code == .canceledLogin {
-                    continuation.resume(throwing: AskError.message("Sign-in was cancelled."))
+                    // Cancelling is the person's choice, not a failure to report.
+                    continuation.resume(throwing: CancellationError())
                 } else {
                     continuation.resume(throwing: error ?? AskError.message("Sign-in did not finish."))
                 }

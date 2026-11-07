@@ -260,7 +260,7 @@ struct AskPanel: View {
                     .frame(height: 28)
                 }
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 20)
             .padding(.bottom, 8)
         } else {
             VStack(alignment: .leading, spacing: 8) {
@@ -580,8 +580,10 @@ struct ConnectionsSettings: View {
                 Button {
                     adding = AddServerRequest()
                 } label: {
-                    HStack(spacing: phone ? 10 : 8) {
+                    HStack(spacing: phone ? 12 : 8) {
+                        // On the phone the plus takes the icon tiles' 30 pt slot, so the text lines up.
                         Image(systemName: "plus").font(.system(size: phone ? 15 : 12, weight: .semibold))
+                            .frame(width: phone ? 30 : nil)
                         Text(phone ? "Add MCP server" : "Add MCP server…").font(.system(size: phone ? 17 : 13, weight: phone ? .regular : .medium))
                         Spacer()
                     }
@@ -627,8 +629,9 @@ struct ConnectionsSettings: View {
                         .accessibilityLabel(connection.name)
                 }
             } else {
+                // The same tinted capsule as ChatGPT and Claude above.
                 Button("Connect") { connect(connection) }
-                    .buttonStyle(phone ? AnyButtonStyle(PlainAccentButton()) : AnyButtonStyle(OutlineButton()))
+                    .buttonStyle(phone ? AnyButtonStyle(FilledButton(phone: true)) : AnyButtonStyle(OutlineButton()))
             }
         }
         .padding(.horizontal, phone ? 16 : 14)
@@ -649,6 +652,8 @@ struct ConnectionsSettings: View {
         Task {
             do {
                 try await ai.connect(connection.id)
+            } catch is CancellationError {
+                problem = nil
             } catch {
                 problem = error.localizedDescription
             }
@@ -783,6 +788,8 @@ struct AddMCPServerSheet: View {
             do {
                 try await ai.add(name: name, url: url, token: token.isEmpty ? nil : token, clientID: clientID.isEmpty ? nil : clientID)
                 dismiss()
+            } catch is CancellationError {
+                problem = nil
             } catch {
                 problem = error.localizedDescription
             }

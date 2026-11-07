@@ -155,7 +155,7 @@ enum MCPServer {
 /// Registers the server with Claude Desktop and offers the Claude Code command.
 enum ClaudeConnection {
     /// The binary Claude launches: this app, with `--mcp`.
-    static var executable: String { Bundle.main.executablePath ?? "/Applications/LiveTranslate.app/Contents/MacOS/LiveTranslate" }
+    static var executable: String { Bundle.main.executablePath ?? "/Applications/Live Translate.app/Contents/MacOS/LiveTranslate" }
 
     static var desktopConfig: URL {
         FileManager.default.homeDirectoryForCurrentUser

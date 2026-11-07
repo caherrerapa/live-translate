@@ -407,7 +407,12 @@ final class SessionController: ObservableObject {
                 }
             } else {
                 self.activeSpeechKey = nil
+                #if os(iOS)
+                // Usually the system could not fetch the language's model; it needs a connection once.
+                self.speechStatus = .failed("\(plan.title) could not start. Connect to the internet so iOS can download it, then tap the mic again.")
+                #else
                 self.speechStatus = .failed("\(plan.title) could not be opened.")
+                #endif
                 self.listenWhenReady = false
             }
         }
@@ -741,6 +746,13 @@ final class SessionController: ObservableObject {
             change(&current)
             if !engine.turns.isEmpty || !current.userNotes.isEmpty { persistCurrent() }
         }
+    }
+
+    /// Saves what has been heard so far. The phone calls this on leaving the foreground,
+    /// where the system may end the app without warning and the session would be lost.
+    func saveLiveSession() {
+        guard !engine.turns.isEmpty || !current.userNotes.isEmpty else { return }
+        persistCurrent()
     }
 
     /// Writes the live session to history. Text only.

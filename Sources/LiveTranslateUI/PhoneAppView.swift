@@ -12,6 +12,7 @@ struct PhoneAppView: View {
     /// Set when the chosen pair still needs Apple's translation model; the system then asks to download it.
     @State private var translationSetup: TranslationSession.Configuration?
     @State private var settingsDemo = false
+    @State private var modelsDemo = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -35,8 +36,11 @@ struct PhoneAppView: View {
         .sheet(isPresented: $settingsDemo) {
             PhoneSettingsView(controller: controller)
         }
+        .sheet(isPresented: $modelsDemo) {
+            ModelScreen(controller: controller, library: controller.library)
+        }
         .sheet(isPresented: $controller.calendarSetupPresented) {
-            ScrollView { CalendarSettingsView() }
+            CalendarSettingsView()
                 .presentationDragIndicator(.visible)
         }
         .translationTask(translationSetup) { session in
@@ -74,6 +78,9 @@ struct PhoneAppView: View {
                 controller.listenOrStop()
                 try? await Task.sleep(nanoseconds: 600_000_000)
                 settingsDemo = true
+            case "models":
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                modelsDemo = true
             case "calendar":
                 controller.listenOrStop()
                 controller.calendarSetupPresented = true
@@ -400,37 +407,17 @@ private struct PhoneSessionDetail: View {
 
     @State private var settings = false
     @State private var query = ""
+    /// The turn an Ask citation points at; Transcript scrolls to it and tints it briefly.
+    @State private var focusedTurn: String?
+    /// Share files, written when the session changes rather than on every redraw.
+    @State private var exports: [SessionController.ExportFormat: URL] = [:]
 
     enum Tab { case summary, transcript, ask }
 
     var body: some View {
         let record = controller.displayedRecord
         VStack(alignment: .leading, spacing: 0) {
-            if tab == .ask {
-                // Ask: a compact title bar so the conversation gets the room.
-                ZStack {
-                    Text(verbatim: record.displayTitle)
-                        .font(.system(size: 17, weight: .semibold))
-                        .lineLimit(1)
-                        .padding(.horizontal, 52)
-                    HStack {
-                        backButton
-                        Spacer()
-                    }
-                }
-                .frame(height: 44)
-                .padding(.horizontal, 8)
-                .padding(.top, 8)
-                segments
-                    .padding(.horizontal, 20)
-                    .padding(.top, 8)
-                AskPanel(
-                    controller: controller,
-                    style: .phone,
-                    showTurn: { _ in tab = .transcript },
-                    openSettings: { settings = true }
-                )
-            } else {
+            // One header for every tab, so switching tabs never moves or restyles it.
             backButton
             .padding(.horizontal, 8)
             .padding(.top, 8)
@@ -448,17 +435,41 @@ private struct PhoneSessionDetail: View {
             segments
                 .padding(.horizontal, 20)
                 .padding(.top, 20)
-            ScrollView {
-                Group {
-                    switch tab {
-                    case .summary, .ask: summary(record)
-                    case .transcript: transcript(record)
+            if tab == .ask {
+                AskPanel(
+                    controller: controller,
+                    style: .phone,
+                    showTurn: { id in
+                        query = ""
+                        focusedTurn = id
+                        tab = .transcript
+                    },
+                    openSettings: { settings = true }
+                )
+            } else {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Group {
+                        switch tab {
+                        case .summary, .ask: summary(record)
+                        case .transcript: transcript(record)
+                        }
                     }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 24)
+                    .padding(.bottom, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 24)
-                .padding(.bottom, 12)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .scrollDismissesKeyboard(.immediately)
+                .task(id: focusedTurn) {
+                    guard let id = focusedTurn else { return }
+                    // Lets the Transcript tab lay out before scrolling to the cited turn.
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    // Near the top, clear of the Copy bar that covers the bottom of the list.
+                    withAnimation { proxy.scrollTo(id, anchor: UnitPoint(x: 0.5, y: 0.2)) }
+                    try? await Task.sleep(nanoseconds: 1_800_000_000)
+                    withAnimation { focusedTurn = nil }
+                }
             }
             HStack(spacing: 10) {
                 Button { copying = true } label: {
@@ -471,14 +482,21 @@ private struct PhoneSessionDetail: View {
                 }
                 .buttonStyle(.plain)
                 Menu {
-                    ShareLink(item: record.markdown(), subject: Text(verbatim: record.displayTitle)) {
-                        Label("Share as Markdown", systemImage: "doc.richtext")
+                    // Named files with a preview, so the share sheet shows the session's title.
+                    if let markdown = exports[.markdown] {
+                        ShareLink(item: markdown, preview: SharePreview(record.displayTitle, icon: Self.shareIcon("doc.richtext"))) {
+                            Label("Markdown", systemImage: "doc.richtext")
+                        }
                     }
-                    if let srt = controller.subtitleFile(.srt) {
-                        ShareLink(item: srt) { Label("Share Subtitles (SRT)", systemImage: "captions.bubble") }
+                    if let srt = exports[.srt] {
+                        ShareLink(item: srt, preview: SharePreview(record.displayTitle, icon: Self.shareIcon("captions.bubble"))) {
+                            Label("Subtitles (SRT)", systemImage: "captions.bubble")
+                        }
                     }
-                    if let vtt = controller.subtitleFile(.vtt) {
-                        ShareLink(item: vtt) { Label("Share Subtitles (WebVTT)", systemImage: "captions.bubble") }
+                    if let vtt = exports[.vtt] {
+                        ShareLink(item: vtt, preview: SharePreview(record.displayTitle, icon: Self.shareIcon("captions.bubble"))) {
+                            Label("Subtitles (WebVTT)", systemImage: "captions.bubble")
+                        }
                     }
                 } label: {
                     Image(systemName: "square.and.arrow.up")
@@ -498,6 +516,13 @@ private struct PhoneSessionDetail: View {
             PhoneSettingsView(controller: controller)
         }
         .toolbar(.hidden, for: .navigationBar)
+        .task(id: record) {
+            var files: [SessionController.ExportFormat: URL] = [:]
+            for format in [SessionController.ExportFormat.markdown, .srt, .vtt] {
+                files[format] = controller.subtitleFile(format)
+            }
+            exports = files
+        }
         .onAppear {
             controller.open(id)
             #if DEBUG
@@ -515,6 +540,17 @@ private struct PhoneSessionDetail: View {
                 .presentationCornerRadius(28)
                 .presentationBackground(.white)
         }
+    }
+
+    /// The share sheet draws only bitmap-backed icons; a template symbol shows as a blank square.
+    private static func shareIcon(_ symbol: String) -> Image {
+        let configuration = UIImage.SymbolConfiguration(pointSize: 40, weight: .medium)
+        guard let image = UIImage(systemName: symbol, withConfiguration: configuration)?
+            .withTintColor(UIColor(Theme.accent), renderingMode: .alwaysOriginal) else {
+            return Image(systemName: symbol)
+        }
+        let rendered = UIGraphicsImageRenderer(size: image.size).image { _ in image.draw(at: .zero) }
+        return Image(uiImage: rendered)
     }
 
     private var backButton: some View {
@@ -560,7 +596,15 @@ private struct PhoneSessionDetail: View {
     @ViewBuilder
     private func summary(_ record: SessionRecord) -> some View {
         let note = record.note
-        let summary = note.summary.map(\.text).joined(separator: " ")
+        // Summary items are separate sentences; one without an ending gets a period so the
+        // paragraph does not run on. Thai and similar scripts have no period and are left alone.
+        let summary = note.summary.map { item -> String in
+            let text = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let last = text.unicodeScalars.last, last.isASCII,
+                  CharacterSet.alphanumerics.contains(last) else { return text }
+            return text + "."
+        }
+        .joined(separator: " ")
         let points = note.decisions + note.openQuestions + note.highlights
         VStack(alignment: .leading, spacing: 28) {
             if summary.isEmpty && points.isEmpty && note.actions.isEmpty {
@@ -630,6 +674,7 @@ private struct PhoneSessionDetail: View {
                     Image(systemName: "magnifyingglass").foregroundStyle(Phone.secondary)
                     TextField("Search the transcript", text: $query)
                         .font(.system(size: 17))
+                        .submitLabel(.search)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                     if !query.isEmpty {
@@ -663,6 +708,13 @@ private struct PhoneSessionDetail: View {
                     }
                 }
                 .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background {
+                    if focusedTurn == turn.id {
+                        RoundedRectangle(cornerRadius: 10).fill(Theme.accentSoft).padding(-8)
+                    }
+                }
+                .id(turn.id)
             }
         }
     }
@@ -683,10 +735,16 @@ private struct PhoneCopySheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Copy")
-                .font(.system(size: 22, weight: .bold))
-                .padding(.horizontal, 4)
-                .padding(.top, 20)
+            HStack {
+                Text("Copy")
+                    .font(.system(size: 22, weight: .bold))
+                Spacer()
+                Button("Done") { dismiss() }
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+            }
+            .padding(.horizontal, 4)
+            .padding(.top, 20)
             VStack(spacing: 0) {
                 row("Translation", detail: record.direction.target.title, kind: .translation)
                 Phone.separator.frame(height: 1).padding(.leading, 16)
@@ -742,12 +800,14 @@ struct PhoneSettingsView: View {
             }
             .frame(height: 44)
             .padding(.horizontal, 20)
-            Text("Settings")
-                .font(.system(size: 34, weight: .bold))
-                .kerning(-0.34)
-                .padding(.horizontal, 20)
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
+                    // Inside the scroll, like a large title, so rows never slide under it.
+                    Text("Settings")
+                        .font(.system(size: 34, weight: .bold))
+                        .kerning(-0.34)
+                        .padding(.horizontal, 4)
+                        .padding(.bottom, -6)
                     ConnectionsSettings(phone: true)
                     VStack(alignment: .leading, spacing: 7) {
                         Text("MORE").font(.system(size: 13)).kerning(0.26).foregroundStyle(Phone.secondary).padding(.horizontal, 16)
@@ -760,7 +820,6 @@ struct PhoneSettingsView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 20)
                 .padding(.bottom, 34)
             }
         }
@@ -770,7 +829,7 @@ struct PhoneSettingsView: View {
             ModelScreen(controller: controller, library: controller.library)
         }
         .sheet(isPresented: $calendar) {
-            ScrollView { CalendarSettingsView() }
+            CalendarSettingsView()
                 .presentationDragIndicator(.visible)
         }
     }
@@ -896,6 +955,11 @@ struct PhoneLanguagePicker: View {
                 Spacer(minLength: 0)
                 if language == selected {
                     Image(systemName: "checkmark").font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.accent)
+                } else if language == other {
+                    // The other side's language: picking it swaps the direction.
+                    Label("Swap", systemImage: "arrow.left.arrow.right")
+                        .font(.system(size: 15))
+                        .foregroundStyle(Phone.secondary)
                 } else if needsDownload.contains(language) {
                     Image(systemName: "arrow.down.to.line")
                         .font(.system(size: 16, weight: .semibold))

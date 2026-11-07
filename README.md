@@ -68,7 +68,7 @@ The iPhone scheme is `LiveTranslateiOS`. Run it on an iPhone 17 Pro Max. The sim
 Live Translate is also an MCP server, so the Claude app you are signed into can read your sessions and use them with its other connectors (email, calendar, tasks, docs). Choose File → Connect to Claude… and press Add to Claude Desktop, or copy the Claude Code command:
 
 ```
-claude mcp add --scope user live-translate -- "/Applications/LiveTranslate.app/Contents/MacOS/LiveTranslate" --mcp
+claude mcp add --scope user live-translate -- "/Applications/Live Translate.app/Contents/MacOS/LiveTranslate" --mcp
 ```
 
 Claude gets four read-only tools: `list_sessions`, `get_session` (Markdown with summary, action items and the bilingual transcript), `get_transcript` and `search_sessions`. `latest` is the most recent session, including one still being recorded. It cannot change or delete sessions and never gets audio.
