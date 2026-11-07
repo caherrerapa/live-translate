@@ -33,7 +33,10 @@ rsync -a --exclude '__pycache__' "$VENV/lib/$PYVER/site-packages/" "$RUNTIME/lib
 # Gatekeeper accepts a downloaded app only when it is signed with a Developer ID
 # Application certificate and notarized. Without one, the DMG is ad-hoc signed and
 # macOS warns that it may be dangerous.
-IDENTITY=${DEVELOPER_ID:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)}
+# Published by Nimbl3 Ltd. (team 4TWS7E2EPE): its Developer ID first, then any other.
+TEAM_ID=${TEAM_ID:-4TWS7E2EPE}
+IDENTITY=${DEVELOPER_ID:-$(security find-identity -v -p codesigning | sed -n "s/.*\"\(Developer ID Application: [^\"]*($TEAM_ID)\)\".*/\1/p" | head -1)}
+IDENTITY=${IDENTITY:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)}
 NOTARY_PROFILE=${NOTARY_PROFILE:-live-translate-notary}
 ENTITLEMENTS="$ROOT/scripts/LiveTranslate.entitlements"
 
