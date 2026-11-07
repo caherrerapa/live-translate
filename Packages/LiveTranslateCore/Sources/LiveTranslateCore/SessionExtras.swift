@@ -9,15 +9,6 @@ enum SubtitleText: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-/// One speaker's share of a session.
-struct SpeakerShare: Equatable, Identifiable {
-    var id: String { speaker }
-    var speaker: String
-    var seconds: TimeInterval
-    var turns: Int
-    var fraction: Double
-}
-
 extension SessionRecord {
     // MARK: Subtitles
 
@@ -78,39 +69,5 @@ extension SessionRecord {
         let m = (total / 60_000) % 60
         let h = total / 3_600_000
         return String(format: "%02d:%02d:%02d%@%03d", h, m, s, comma ? "," : ".", ms)
-    }
-
-    // MARK: Talk time
-
-    /// How long each speaker talked, longest first. Turns without a speaker are left out.
-    func speakerShares() -> [SpeakerShare] {
-        var seconds: [String: TimeInterval] = [:]
-        var counts: [String: Int] = [:]
-        var order: [String] = []
-        for turn in turns where !turn.speaker.isEmpty {
-            if seconds[turn.speaker] == nil { order.append(turn.speaker) }
-            seconds[turn.speaker, default: 0] += Self.spokenSeconds(turn)
-            counts[turn.speaker, default: 0] += 1
-        }
-        let total = seconds.values.reduce(0, +)
-        return order
-            .map { SpeakerShare(speaker: $0, seconds: seconds[$0] ?? 0, turns: counts[$0] ?? 0,
-                                fraction: total > 0 ? (seconds[$0] ?? 0) / total : 0) }
-            .sorted { $0.seconds > $1.seconds }
-    }
-
-    /// A turn's length; when the recorded span is implausibly short for its text (a turn committed
-    /// in one step), about 14 characters per second of speech stands in.
-    static func spokenSeconds(_ turn: SavedTurn) -> TimeInterval {
-        let span = max(0, turn.end - turn.start)
-        let estimate = Double(turn.source.count) / 14
-        return span < estimate / 3 ? estimate : span
-    }
-
-    /// "4 min 10 s" style, for talk time.
-    static func talkTime(_ seconds: TimeInterval) -> String {
-        let total = max(0, Int(seconds.rounded()))
-        if total >= 60 { return total % 60 == 0 ? "\(total / 60) min" : "\(total / 60) min \(total % 60) s" }
-        return "\(total) s"
     }
 }

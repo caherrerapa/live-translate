@@ -617,7 +617,6 @@ private struct PhoneSessionDetail: View {
                     }
                 }
             }
-            WhoSpoke(shares: record.speakerShares(), compact: true)
         }
     }
 

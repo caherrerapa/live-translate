@@ -89,7 +89,7 @@ private struct MacGeneralSettings: View {
                         }
                     }
                 }
-                Text("When a session ends, it is written there with its summary, who spoke, and the transcript, and updated when the summary finishes. Works well with an Obsidian vault or an iCloud Drive folder.")
+                Text("When a session ends, it is written there with its summary and the transcript, and updated when the summary finishes. Works well with an Obsidian vault or an iCloud Drive folder.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Copy") {

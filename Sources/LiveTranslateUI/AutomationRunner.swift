@@ -465,7 +465,7 @@ enum AutomationRunner {
         check("Long meeting: main thread never stalls over 150 ms", worst < 0.15, String(format: "worst %.0f ms", worst * 1000))
     }
 
-    /// The five added features: subtitles, who spoke, find, the Markdown folder, the menu bar.
+    /// Added features: subtitles, find, the Markdown folder, the menu bar.
     private static func featuresCheck(_ controller: SessionController) async {
         controller.loadDemo()
         await sleep(1)
@@ -480,11 +480,6 @@ enum AutomationRunner {
               && SessionController.ExportFormat.srt.contentType.preferredFilenameExtension == "srt"
               && SessionController.ExportFormat.vtt.contentType.preferredFilenameExtension == "vtt",
               String(vtt.prefix(80)).replacingOccurrences(of: "\n", with: " / "))
-        // 2. Who spoke
-        let shares = controller.displayedRecord.speakerShares()
-        check("Who spoke: talk time per speaker, in the Markdown too",
-              shares.count == 2 && controller.displayedRecord.markdown().contains("## Who spoke"),
-              shares.map { "\($0.speaker) \(SessionRecord.talkTime($0.seconds)) \(Int($0.fraction * 100))%" }.joined(separator: ", "))
         // 3. Find, through the real ⌘F menu item
         func press(_ key: String, _ flags: NSEvent.ModifierFlags) -> Bool {
             guard let event = NSEvent.keyEvent(

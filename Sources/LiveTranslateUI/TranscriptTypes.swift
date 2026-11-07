@@ -273,43 +273,6 @@ extension View {
     func outlined() -> some View { modifier(OutlinedControl()) }
 }
 
-/// Talk time per speaker: name, a bar for the share, and minutes. Hidden with fewer than two voices.
-struct WhoSpoke: View {
-    let shares: [SpeakerShare]
-    var compact = false
-
-    var body: some View {
-        if shares.count > 1 {
-            VStack(alignment: .leading, spacing: compact ? 10 : 9) {
-                Text("WHO SPOKE")
-                    .font(.system(size: compact ? 13 : 11, weight: .semibold))
-                    .tracking((compact ? 13 : 11) * 0.04)
-                    .foregroundStyle(Color(hex: 0x636366))
-                ForEach(Array(shares.enumerated()), id: \.element.id) { index, share in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text(verbatim: share.speaker).font(.system(size: compact ? 16 : 13, weight: .medium))
-                            Spacer()
-                            Text(verbatim: "\(SessionRecord.talkTime(share.seconds)) · \(Int((share.fraction * 100).rounded())) %")
-                                .font(.system(size: compact ? 14 : 12).monospacedDigit())
-                                .foregroundStyle(Color(hex: 0x636366))
-                        }
-                        GeometryReader { geo in
-                            ZStack(alignment: .leading) {
-                                Capsule().fill(Color(hex: 0xEEEEF2))
-                                Capsule().fill(Theme.speakers[index % Theme.speakers.count])
-                                    .frame(width: max(4, geo.size.width * share.fraction))
-                            }
-                        }
-                        .frame(height: 5)
-                    }
-                    .accessibilityElement(children: .combine)
-                }
-            }
-        }
-    }
-}
-
 /// Find highlighting shared by the Mac transcript and the iPhone Transcript tab.
 enum FindMarking {
     /// The text with every Find match on a yellow marker, ignoring case and accents.

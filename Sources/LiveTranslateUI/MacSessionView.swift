@@ -1071,7 +1071,6 @@ struct SummaryInspector: View {
                         summary
                         keyPoints
                         actions
-                        WhoSpoke(shares: record.speakerShares(), compact: false)
                     }
                     .padding(.top, 16)
                     .padding(.bottom, 22)

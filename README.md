@@ -94,6 +94,5 @@ Settings → Connections (⌘, on the Mac; the gear on iPhone) chooses who answe
 
 - **Find in transcript** — ⌘F on the Mac (⌘G / ⇧⌘G for next and previous), the search field in the iPhone Transcript tab. Ignores case and accents, in the original and the translation.
 - **Subtitles** — File → Export → Subtitles (SRT) or (WebVTT), or Share on iPhone. Cues use each turn's times; WebVTT names the speaker. Export → Subtitles Show picks the translation, the original, or both.
-- **Who spoke** — talk time per speaker in the summary panel and in the Markdown.
 - **Save sessions as Markdown to a folder** — Settings → General. Each finished session lands there (an Obsidian vault, iCloud Drive…), updated when the summary finishes and renamed with the title.
 - **Menu bar and ⌃⌥Space** — Listen, Stop, Pause and the latest translated line from the menu bar; ⌃⌥Space starts and stops listening from any app (Settings → General to turn it off).

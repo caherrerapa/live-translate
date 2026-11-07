@@ -1021,23 +1021,6 @@ final class LiveTranslateCoreTests: XCTestCase {
         XCTAssertEqual(SessionRecord.stamp(0, comma: true), "00:00:00,000")
     }
 
-    func testSpeakerSharesAndMarkdown() {
-        let record = extrasRecord()
-        let shares = record.speakerShares()
-        XCTAssertEqual(shares.map(\.speaker), ["Niran", "Sarah"])
-        XCTAssertEqual(shares[0].turns, 1)
-        XCTAssertEqual(shares[1].turns, 2)
-        XCTAssertEqual(shares.map(\.fraction).reduce(0, +), 1, accuracy: 0.0001)
-        XCTAssertEqual(SessionRecord.talkTime(58.75), "59 s")
-        XCTAssertEqual(SessionRecord.talkTime(125), "2 min 5 s")
-        let markdown = record.markdown()
-        XCTAssertTrue(markdown.contains("## Who spoke"))
-        XCTAssertTrue(markdown.contains("- Niran: 59 s (95 %), 1 turn"), markdown)
-        // A turn committed in one step (no span) is measured by its text instead of counting as 0 s.
-        let instant = SavedTurn(id: "t9", source: String(repeating: "word ", count: 28), translation: "", speaker: "A", start: 5, end: 5, direction: "en-th")
-        XCTAssertEqual(SessionRecord.spokenSeconds(instant), 10, accuracy: 0.01)
-    }
-
     private func sourceSlice(_ source: String, from startMark: String, to endMark: String) throws -> String {
         guard let start = source.range(of: startMark),
               let end = source.range(of: endMark, range: start.upperBound..<source.endIndex) else {
