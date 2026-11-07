@@ -48,8 +48,20 @@ if [[ -n "$IDENTITY" ]]; then
     done
   codesign --force --timestamp --options runtime --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$APP"
   codesign --verify --deep --strict --verbose=2 "$APP"
+elif DEV_IDENTITY=$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -1); [[ -n "$DEV_IDENTITY" ]]; then
+  # Not enough for Gatekeeper, but a stable identity: macOS remembers Microphone and Screen
+  # Recording permission across updates. An ad-hoc signature is a new app on every build.
+  echo "==> Sign with $DEV_IDENTITY (no Developer ID, so Gatekeeper will warn; permissions persist)"
+  find "$APP/Contents" -type f \( -name "*.so" -o -name "*.dylib" -o -perm -111 \) -print0 |
+    while IFS= read -r -d '' file; do
+      if file "$file" | grep -q "Mach-O"; then
+        codesign --force --sign "$DEV_IDENTITY" "$file"
+      fi
+    done
+  codesign --force --sign "$DEV_IDENTITY" "$APP"
+  codesign --verify --deep --strict --verbose=2 "$APP"
 else
-  echo "==> Sign (ad hoc): no Developer ID Application certificate, so Gatekeeper will warn"
+  echo "==> Sign (ad hoc): no certificate, so Gatekeeper will warn and permissions are asked again after each update"
   codesign --force --deep --sign - "$APP"
   codesign --verify --deep --strict "$APP"
 fi
