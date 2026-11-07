@@ -698,11 +698,21 @@ struct TurnRow: View {
                         .foregroundStyle(Theme.speakerName)
                         .onTapGesture(count: 2) { if turn.renamable { controller.beginRename(turn.id) } }
                 }
-                if active {
-                    Text(turn.clock.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)))
-                        .font(.system(size: 12).monospacedDigit())
-                        .foregroundStyle(Theme.secondary)
+                // Time and copy buttons are always laid out and only shown on hover: nothing moves.
+                Text(turn.clock.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)))
+                    .font(.system(size: 12).monospacedDigit())
+                    .foregroundStyle(Theme.secondary)
+                    .opacity(active ? 1 : 0)
+                Spacer(minLength: 8)
+                HStack(spacing: 6) {
+                    if layout != .translationOnly {
+                        copyButton("Original", help: "Copy original") { copyOriginal() }
+                    }
+                    copyButton("Translation", help: "Copy translation") { copyTranslation() }
                 }
+                .opacity(active ? 1 : 0)
+                .allowsHitTesting(active)
+                .accessibilityHidden(!active)
             }
             .frame(height: 22)
             switch layout {
@@ -743,24 +753,26 @@ struct TurnRow: View {
     }
 
     private func column(_ text: some View, copyLabel: String, copy: @escaping () -> Void) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            text.frame(maxWidth: .infinity, alignment: .leading)
-            // Always laid out, only shown on hover, so the text never re-wraps as the pointer moves.
-            Button(action: copy) {
-                Glyph(kind: .copy, size: 14)
-                    .foregroundStyle(Theme.accent)
-                    .frame(width: 28, height: 28)
-                    .background(Color.white, in: RoundedRectangle(cornerRadius: 7))
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.chipBorder))
+        text.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// A small copy chip in the turn's first row, so it never covers or squeezes the text.
+    private func copyButton(_ title: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Glyph(kind: .copy, size: 12)
+                Text(title).font(.system(size: 12, weight: .medium))
             }
-            .buttonStyle(.plain)
-            .help(copyLabel)
-            .accessibilityLabel(copyLabel)
-            .opacity(active ? 1 : 0)
-            .allowsHitTesting(active)
-            .accessibilityHidden(!active)
+            .foregroundStyle(Theme.accent)
+            .padding(.horizontal, 7)
+            .frame(height: 22)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.chipBorder))
+            .contentShape(Rectangle())
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(help)
     }
 
     private var sourceText: some View {
