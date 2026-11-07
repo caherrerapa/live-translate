@@ -89,8 +89,12 @@ final class AppleSpeechDecoder: LiveSpeechDecoder {
     /// Distant voices often sit under the RMS gate mid-sentence, so silence alone does not end
     /// a turn: the words must also have stopped changing for 0.6 s.
     static let pausedStableSamples = 9_600
-    /// Words unchanged for 1.2 s end a turn at any level, for noisy rooms and quiet talkers.
+    /// Words unchanged for 1.2 s end a turn once there is a moment of quiet (0.4 s)...
     static let stableSamples = 19_200
+    static let stableQuietSamples = 6_400
+    /// ...or after 2.5 s at any level, for noisy rooms. A slow recognizer can hold the words
+    /// still for over a second while someone is talking, which cut sentences into fragments.
+    static let stuckSamples = 40_000
     // Touched only from the speech queue.
     private var samplesSeen = 0
     private var silentSamples = 0
@@ -133,6 +137,8 @@ final class AppleSpeechDecoder: LiveSpeechDecoder {
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         let started = AppleEngines.blocking(timeout: 30, fallback: false) {
             do {
+                // Loads the model now, so the first words are not lost to a cold start.
+                try await analyzer.prepareToAnalyze(in: format)
                 try await analyzer.start(inputSequence: stream)
                 return true
             } catch {
@@ -221,7 +227,8 @@ final class AppleSpeechDecoder: LiveSpeechDecoder {
         }
         let unchanged = samplesSeen - formingSince
         let paused = heardSpeech && silentSamples >= Self.endpointSamples && unchanged >= Self.pausedStableSamples
-        let settled = unchanged >= Self.stableSamples
+        let settled = (unchanged >= Self.stableSamples && silentSamples >= Self.stableQuietSamples)
+            || unchanged >= Self.stuckSamples
         if !text.isEmpty, !finalizing, paused || settled {
             // The final result arrives on the results task and closes the turn at a later push.
             finalizing = true
