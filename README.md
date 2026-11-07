@@ -77,7 +77,7 @@ Claude gets four read-only tools: `list_sessions`, `get_session` (Markdown with 
 
 File → Connect Google Calendar… (on iPhone: settings → Google Calendar). When a session starts, the meeting happening now names the session, and its attendees and agenda go to the summary and to the Markdown Claude reads. Access is read-only (`calendar.events.readonly`); the refresh token stays in the Keychain.
 
-You need your own OAuth client ID once: in Google Cloud Console create a project, enable the Google Calendar API, configure the OAuth consent screen (add yourself as a test user), and create an OAuth client of type **iOS** with bundle ID `com.caherrerapa.LiveTranslateiOS`. The same client ID works on the Mac.
+You need your own OAuth client ID once: in Google Cloud Console create a project, enable the Google Calendar API, configure the OAuth consent screen (add yourself as a test user), and create an OAuth client of type **iOS** with bundle ID `co.nimblehq.LiveTranslate`. The same client ID works on the Mac.
 
 ## Ask the meeting
 

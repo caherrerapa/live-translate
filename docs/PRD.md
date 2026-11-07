@@ -2,7 +2,7 @@
 
 Status: accepted for the first build. This is the product document. It is not an implementation.
 
-Working name: Live Translate. Repository: `caherrerapa/live-translate`.
+Working name: Live Translate. Repository: `nimblehq/live-translate`.
 
 ## 1. Decision
 
